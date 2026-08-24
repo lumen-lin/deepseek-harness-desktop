@@ -94,7 +94,7 @@ The shell has a built-in "Check & Update Harness" (Help menu): it automatically 
 
 <img width="2151" height="1344" alt="Update log" src="https://github.com/user-attachments/assets/f333d133-b4cb-4ae1-82b5-1661aa214d4d" />
 
-- **Success**: the app exits and reopens on the new version
+- **Success**: the shell window stays open — click "Restart Server" on the update page to launch the new version
 - **Failure**: the old server is restored automatically, and you can keep using it (full output in logs)
 
 > Note: this updates the **dsh core**, not this shell. For shell updates, download the new installer from Releases.

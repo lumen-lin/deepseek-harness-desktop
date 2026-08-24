@@ -6,11 +6,11 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::logging::log;
 use crate::repo;
-use crate::server::{creation_flags_windows, kill_server, start_server, DSH_PORT};
+use crate::server::{creation_flags_windows, kill_server, start_server, DSH_PORT, ServerUrl};
 
 /// 更新步骤标签（前端进度列表与此一一对应）：git pull → pnpm install → pnpm build。
 const UPDATE_STEP_LABELS: &[&str] = &[
@@ -37,6 +37,11 @@ pub(crate) struct UpdateResultPayload {
     pub output_tail: Option<String>,
     /// 已是最新（fetch 对比后无更新）：前端提示并返回应用，不走更新流程。
     pub already_latest: bool,
+    /// 失败且 HEAD 已前移（pull 成功、后续步骤失败）时提供更新前完整
+    /// commit：前端显示「回滚到更新前」按钮，一键退回旧版源码。
+    pub prev_head: Option<String>,
+    /// pull 被本地未提交改动阻止时已自动 stash：提示用户可用 git stash pop 找回。
+    pub stashed_changes: bool,
 }
 
 /// 静默跑 git 子命令并取 stdout（不出控制台窗口）。
@@ -91,6 +96,19 @@ pub(crate) async fn check_update(app: AppHandle) -> Result<CheckResultPayload, S
         local: local[..7.min(local.len())].to_string(),
         remote: remote[..7.min(remote.len())].to_string(),
     })
+}
+
+/// 判断 git pull 失败输出是否为「本地未提交改动阻止合并」类冲突。
+fn looks_like_local_change_conflict(output: &str) -> bool {
+    let s = output.to_lowercase();
+    [
+        "your local changes",
+        "would be overwritten by merge",
+        "untracked working tree files",
+        "please commit your changes or stash",
+    ]
+    .iter()
+    .any(|k| s.contains(k))
 }
 
 /// 探测 pnpm 的实际调用方式，返回 (程序, 前置参数)。
@@ -176,7 +194,13 @@ fn run_update_step(app: &AppHandle, repo: &Path, index: usize, label: &str, prog
         log(app, &line);
         let _ = app.emit("update-log", UpdateLogEvent { text: &format!("{line}\n") });
         if output.len() > 6000 {
-            output = output[output.len() - 6000..].to_string();
+            // 必须按字符边界截断：字节切片落在多字节字符中间会 panic，
+            // 而 release 是 panic=abort，进程会瞬间消失（窗口"自动关闭"事故根因）
+            let mut start = output.len() - 6000;
+            while !output.is_char_boundary(start) {
+                start += 1;
+            }
+            output = output[start..].to_string();
         }
     }
     let status = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
@@ -202,6 +226,19 @@ impl Drop for UpdateGuard {
     }
 }
 
+/// 更新失败后恢复服务器（回退旧版，固定端口优先，占用则回退随机端口）。
+/// 成功路径不调用：成功后壳页面保留更新结果，由用户手动点击「重启服务」。
+fn restore_server(app: &AppHandle, repo: &Path) {
+    match start_server(app, repo, DSH_PORT).or_else(|_| start_server(app, repo, 0)) {
+        Ok(url) => {
+            let _ = app.emit("server-restored", serde_json::json!({ "url": url }));
+        }
+        Err(e) => {
+            log(app, &format!("服务器恢复失败: {e}"));
+        }
+    }
+}
+
 /// Tauri 命令：执行完整更新流程。前端 invoke，事件驱动进度。
 /// force = true 时跳过"已是最新"短路，强制重新执行 install + build
 /// （用于构建曾被中断、产物与源码脱节的自救场景）。
@@ -213,7 +250,10 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
     // 先 fetch 对比：已是最新且非强制重建则直接返回，服务器原样在跑，应用不受影响
     if check_latest(&app, &repo)? && !force {
         log(&app, "已是最新版本，跳过更新流程");
-        return Ok(UpdateResultPayload { ok: true, failed_step: None, output_tail: None, already_latest: true });
+        return Ok(UpdateResultPayload {
+            ok: true, failed_step: None, output_tail: None, already_latest: true,
+            prev_head: None, stashed_changes: false,
+        });
     }
     if force {
         log(&app, "强制重建：跳过版本检查，直接执行构建流程");
@@ -228,47 +268,108 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
     log(&app, &format!("pnpm 调用方式: {} {}", pnpm.0, pnpm.1.join(" ")));
     let commands = update_commands(&pnpm);
 
+    // 更新前基线提交：pull 成功但后续步骤失败时，供「回滚到更新前」使用
+    let prev_head = git_output(&repo, &["rev-parse", "HEAD"]).ok();
+
     kill_server(&app);
     UPDATING.store(true, Ordering::SeqCst);
     let _guard = UpdateGuard;
 
+    // stash 自动善后只试一次；step 不递增即重跑当前步（目前只有 git pull 需要）
     let mut failure: Option<(usize, String)> = None;
-    for (i, (program, args)) in commands.iter().enumerate() {
-        let (ok, output) = run_update_step(&app, &repo, i, UPDATE_STEP_LABELS[i], program, args);
-        if !ok {
-            failure = Some((i, output));
-            break;
+    let mut stashed_changes = false;
+    let mut step = 0usize;
+    while step < commands.len() {
+        let (program, args) = &commands[step];
+        let (ok, output) = run_update_step(&app, &repo, step, UPDATE_STEP_LABELS[step], program, args);
+        if ok {
+            step += 1;
+            continue;
         }
+        // git pull 被本地未提交改动阻止：自动 stash（含未跟踪文件）后重试一次。
+        // 不自动 pop——恢复时机由用户决定，避免与新代码冲突
+        if step == 0 && !stashed_changes && looks_like_local_change_conflict(&output) {
+            log(&app, "检测到本地未提交改动阻止 git pull，自动执行 git stash 暂存");
+            match git_output(&repo, &["stash", "push", "--include-untracked", "-m", "dsh-shell auto-stash"]) {
+                Ok(_) => {
+                    stashed_changes = true;
+                    continue;
+                }
+                Err(e) => log(&app, &format!("git stash 失败: {e}")),
+            }
+        }
+        failure = Some((step, output));
+        break;
     }
 
-/// 更新失败后恢复服务器（回退旧版，固定端口优先，占用则回退随机端口）。
-/// 成功路径不调用：成功后由前端 exit_app 直接退出（服务器已在构建前关闭）。
-fn restore_server(app: &AppHandle, repo: &Path) {
-    match start_server(app, repo, DSH_PORT).or_else(|_| start_server(app, repo, 0)) {
-        Ok(url) => {
-            let _ = app.emit("server-restored", serde_json::json!({ "url": url }));
+    match failure {
+        None => {
+            // 成功：不恢复服务器、不退出应用——壳页面保留更新结果，
+            // 前端显示「重启服务」按钮，用户手动调用 restart_server 以新版启动
+            log(&app, "更新完成（等待用户手动重启服务）");
+            Ok(UpdateResultPayload {
+                ok: true, failed_step: None, output_tail: None, already_latest: false,
+                prev_head: None, stashed_changes,
+            })
         }
-        Err(e) => {
-            log(app, &format!("服务器恢复失败: {e}"));
+        Some((step_index, output)) => {
+            restore_server(&app, &repo);
+            // HEAD 已前移（pull 成功、后续失败）→ 提供回滚目标
+            let head_now = git_output(&repo, &["rev-parse", "HEAD"]).ok();
+            let rollback_base = match (&prev_head, &head_now) {
+                (Some(a), Some(b)) if a != b => Some(a.clone()),
+                _ => None,
+            };
+            Ok(UpdateResultPayload {
+                ok: false,
+                failed_step: Some(UPDATE_STEP_LABELS[step_index].to_string()),
+                output_tail: Some(output.chars().rev().take(1500).collect::<String>().chars().rev().collect()),
+                already_latest: false,
+                prev_head: rollback_base,
+                stashed_changes,
+            })
         }
     }
 }
 
-    match failure {
-        None => {
-            // 成功：不恢复服务器、不重启——前端提示后调用 exit_app 直接退出，
-            // 用户重新打开应用即使用新版本（服务器已随构建前关闭，保持关闭状态）
-            log(&app, "更新完成（服务器保持关闭，应用即将退出）");
-            Ok(UpdateResultPayload { ok: true, failed_step: None, output_tail: None, already_latest: false })
+/// Tauri 命令：一键回滚到更新前的提交（pull 成功但 install/build 失败的场景）。
+/// 杀服务器 → reset --hard 回基线提交 → 重新拉起服务器（旧产物继续服务）。
+/// 不自动 pop stash：本地改动是否恢复由用户自行决定，避免冲突。
+#[tauri::command]
+pub(crate) async fn rollback_update(app: AppHandle, commit: String) -> Result<(), String> {
+    let commit = commit.trim().to_lowercase();
+    if commit.len() < 7 || commit.len() > 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("非法的提交哈希: {commit}"));
+    }
+    let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
+    log(&app, &format!("回滚到更新前提交 {}", &commit[..8.min(commit.len())]));
+    kill_server(&app);
+    git_output(&repo, &["reset", "--hard", &commit]).map_err(|e| format!("git reset 失败: {e}"))?;
+    restore_server(&app, &repo);
+    log(&app, "已回滚到旧版源码，服务器以旧版本重新启动");
+    Ok(())
+}
+
+/// Tauri 命令：手动重启 dsh web 服务器（更新成功后壳保持打开，由用户点击触发）。
+/// 固定端口优先，占用则回退随机端口；就绪后同步 ServerUrl 状态并广播
+/// server-restored（壳页面据此重新装载 iframe），URL 同时直接返回给调用方。
+/// async：同步命令在主线程执行，start_server 最长阻塞 60 秒会冻结窗口。
+#[tauri::command]
+pub(crate) async fn restart_server(app: AppHandle) -> Result<String, String> {
+    let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
+    log(&app, "手动重启 dsh web 服务器");
+    match start_server(&app, &repo, DSH_PORT).or_else(|_| start_server(&app, &repo, 0)) {
+        Ok(url) => {
+            if let Some(state) = app.try_state::<ServerUrl>() {
+                *state.0.lock().unwrap() = Some(url.clone());
+            }
+            let _ = app.emit("server-restored", serde_json::json!({ "url": url }));
+            log(&app, &format!("服务器已重启: {url}"));
+            Ok(url)
         }
-        Some((i, output)) => {
-            restore_server(&app, &repo);
-            Ok(UpdateResultPayload {
-                ok: false,
-                failed_step: Some(UPDATE_STEP_LABELS[i].to_string()),
-                output_tail: Some(output.chars().rev().take(1500).collect::<String>().chars().rev().collect()),
-                already_latest: false,
-            })
+        Err(e) => {
+            log(&app, &format!("服务器重启失败: {e}"));
+            Err(e)
         }
     }
 }

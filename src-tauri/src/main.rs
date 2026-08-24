@@ -1,7 +1,7 @@
 // DeepSeek Harness 桌面端（Tauri 壳）。
 // 职责与 Electron 版一致：定位 deepseek-harness 仓库 → 启动 `dsh web --port 0`
 // → 解析官方就绪信号 `dsh web: http://127.0.0.1:<port>` → 窗口加载该地址。
-// 仓库更新（git fetch 对比 → pull + pnpm build）后重新打开本应用即可。
+// 仓库更新（git fetch 对比 → pull + pnpm build）后在更新页点击「重启服务」即可。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -17,10 +17,33 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use logging::log;
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{window::Color, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 fn main() {
+    // panic 钩子：release 是 panic=abort，进程瞬间消失且无任何界面反馈；
+    // 把 panic 信息写进日志（钩子在 abort 前执行），窗口"无故关闭"时可查证
+    std::panic::set_hook(Box::new(|info| {
+        use std::io::Write;
+        let loc = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "<unknown>".into());
+        let msg = info
+            .payload()
+            .downcast_ref::<&str>().map(|s| (*s).to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "<non-string payload>".into());
+        let entry = format!("[PANIC] {msg} @ {loc}\n");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(logging::log_dir().join("desktop.log"))
+            .and_then(|mut f| f.write_all(entry.as_bytes()));
+    }));
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             // 再次启动：聚焦已有窗口（不开第二个实例/第二台服务器）
@@ -54,7 +77,9 @@ fn main() {
             commands::open_external,
             commands::restart_app,
             commands::confirm_close,
-            commands::exit_app,
+            commands::read_log,
+            update::restart_server,
+            update::rollback_update,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -108,11 +133,22 @@ fn main() {
             })
             .build()?;
 
+            // 恢复上次退出时的窗口大小与位置（无记录则保持默认 1440×900 居中）
+            if let Some(st) = commands::load_window_state() {
+                if !st.maximized {
+                    let _ = main.set_position(tauri::PhysicalPosition::new(st.x, st.y));
+                    let _ = main.set_size(tauri::PhysicalSize::new(st.w, st.h));
+                }
+            }
+
             // 先应用 dsh 主题与语言偏好（首帧一次到位），随后立即显示窗口：
             // 服务器启动要几秒，加载页必须先出现，双击才有即时反馈
             theme::apply_theme_preference(app.handle());
             locale::apply_locale(app.handle());
             let _ = main.show();
+            if let Some(true) = commands::load_window_state().map(|s| s.maximized) {
+                let _ = main.maximize();
+            }
             log(app.handle(), "窗口已显示（服务器后台启动中）");
 
             // 仓库定位：自动失败则弹目录选择框
@@ -194,27 +230,96 @@ fn main() {
             // 语言跟随：监听 settings.yaml 变化（dsh 切换中英文时壳同步）
             locale::spawn_locale_watcher(handle.clone());
 
-            // 窗口事件：关闭前确认（防误关丢失会话）；销毁时杀服务器进程树
+            // 窗口事件：点 X = 隐藏到托盘（服务与会话继续后台运行，防误关）；
+            // 真正退出走托盘菜单「退出」→ 复用壳页面确认弹窗 → confirm_close。
+            // 销毁时杀服务器进程树
             {
                 let handle = app.handle().clone();
                 let main_win = main.clone();
                 main.on_window_event(move |event| match event {
                     tauri::WindowEvent::CloseRequested { api, .. } => {
-                        // restart_app / confirm_close 路径：直接放行
+                        // restart_app / confirm_close 路径：直接放行（destroy 不走此处）
                         if commands::skip_close_confirm() {
                             return;
                         }
+                        commands::save_window_state(&main_win);
                         api.prevent_close();
-                        // 交给壳页面的自定义模态处理：携带是否更新中，
-                        // 更新中只提示不关闭（防误关中断构建）
+                        // 交给壳页面弹窗让用户选择：隐藏到托盘 或 退出
                         let _ = main_win.emit(
                             "close-requested",
-                            serde_json::json!({ "updating": update::is_updating() }),
+                            serde_json::json!({ "updating": update::is_updating(), "source": "titlebar" }),
                         );
                     }
-                    tauri::WindowEvent::Destroyed => server::kill_server(&handle),
+                    tauri::WindowEvent::Destroyed => {
+                        commands::save_window_state(&main_win);
+                        server::kill_server(&handle);
+                    }
                     _ => {}
                 });
+            }
+
+            // 系统托盘：左键单击恢复窗口，右键菜单（显示/退出）
+            {
+                let zh = locale::current_locale().starts_with("zh");
+                let (show_label, quit_label) = if zh {
+                    ("显示主窗口", "退出")
+                } else {
+                    ("Show Window", "Quit")
+                };
+                let show_item =
+                    MenuItem::with_id(app.handle(), "tray-show", show_label, true, None::<&str>)?;
+                let quit_item =
+                    MenuItem::with_id(app.handle(), "tray-quit", quit_label, true, None::<&str>)?;
+                let tray_menu = Menu::with_items(app.handle(), &[&show_item, &quit_item])?;
+                let mut tray = TrayIconBuilder::with_id("dsh-tray")
+                    .menu(&tray_menu)
+                    .show_menu_on_left_click(false)
+                    .tooltip("DeepSeek Harness")
+                    .on_menu_event(|app, event| match event.id.as_ref() {
+                        "tray-show" => {
+                            if let Some(win) = app.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                        "tray-quit" => {
+                            // 更新中不允许退出：把主窗口调到前台显示拦截提示
+                            if update::is_updating() {
+                                if let Some(win) = app.get_webview_window("main") {
+                                    let _ = win.show();
+                                    let _ = win.set_focus();
+                                    let _ = win.emit(
+                                        "close-requested",
+                                        serde_json::json!({ "updating": true, "source": "tray" }),
+                                    );
+                                }
+                                return;
+                            }
+                            // 明确的菜单操作即视为确认，直接退出（窗口可能藏在
+                            // 托盘里，前端弹窗看不到，不能依赖它确认）
+                            commands::force_exit(app);
+                        }
+                        _ => {}
+                    })
+                    .on_tray_icon_event(|tray, event| {
+                        if let TrayIconEvent::Click {
+                            button: MouseButton::Left,
+                            button_state: MouseButtonState::Up,
+                            ..
+                        } = event
+                        {
+                            let app = tray.app_handle();
+                            if let Some(win) = app.get_webview_window("main") {
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                            }
+                        }
+                    });
+                if let Some(icon) = app.default_window_icon().cloned() {
+                    tray = tray.icon(icon);
+                }
+                tray.build(app.handle())?;
+                log(app.handle(), "系统托盘已创建（点 X 隐藏到托盘）");
             }
 
             Ok(())

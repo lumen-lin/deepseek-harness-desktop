@@ -122,6 +122,11 @@ pub(crate) fn spawn_locale_watcher(handle: AppHandle) {
     });
 }
 
+/// 当前语言偏好（托盘菜单等 Rust 侧文案用；与壳页面同一数据源）。
+pub(crate) fn current_locale() -> String {
+    read_locale_preference()
+}
+
 /// Tauri 命令：供壳页面初始化时查询当前语言（webview 刷新后事件已错过）。
 #[tauri::command]
 pub(crate) fn get_locale() -> String {

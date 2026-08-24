@@ -37,6 +37,8 @@
     /* ---------- 内容区 ---------- */
     #content { flex: 1; position: relative; display: flex; min-height: 0; }
     #dsh-frame { flex: 1; border: none; width: 100%; display: none; }
+    @keyframes frame-fadein { from { opacity: 0; } to { opacity: 1; } }
+    #dsh-frame.fade-in { animation: frame-fadein .25s ease-out; }
     .overlay { position: absolute; inset: 0; }
 
     /* 加载视图 */
@@ -92,6 +94,22 @@
     /* 更新中：关闭按钮灰显提示不可关闭 */
     #titlebar.updating #btn-close { opacity: .35; }
 
+    /* ---------- 运行日志查看窗 ---------- */
+    .log-modal { width: 860px; max-width: 94%; height: min(640px, 86vh); display: flex;
+      flex-direction: column; overflow: hidden; }
+    .log-toolbar { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+    .log-toolbar input[type="text"] { flex: 1; min-width: 140px; padding: 7px 10px; border-radius: 8px;
+      font-size: 12.5px; border: 1px solid transparent; outline: none; }
+    .log-toolbar label { font-size: 12.5px; display: flex; align-items: center; gap: 5px;
+      user-select: none; -webkit-user-select: none; white-space: nowrap; }
+    .log-toolbar button { min-width: 0; padding: 7px 14px; font-size: 12.5px; }
+    /* min-height:0 必须：列向 flex 里没有它，内容会把 pre 撑出卡片高度导致布局溢出 */
+    #log-pre { flex: 1; min-height: 0; overflow: auto; margin: 0; padding: 10px; border-radius: 8px;
+      font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-all; }
+    /* 日志行高亮（更新页日志与日志查看窗共用；深色为基准色，浅色在媒体查询覆盖） */
+    .lg-err { color: #ff8578; }
+    .lg-warn { color: #e6b45c; }
+
     /* 服务器断线视图 */
     #server-dead-view { display: none; flex-direction: column; align-items: center;
       justify-content: center; gap: 14px; }
@@ -117,6 +135,8 @@
     .btn-primary { background: #4f8cff; color: #fff; }
     .btn-primary:hover { background: #3d7ef2; }
     .btn-ghost { background: none; }
+    .btn-danger { background: #d2554d; color: #fff; }
+    .btn-danger:hover { background: #c04239; }
 
     /* ---------- 深浅色 ---------- */
     @media (prefers-color-scheme: dark) {
@@ -137,6 +157,8 @@
       .update-card { background: #1b1e27; border: 1px solid #333846; }
       #update-view li::after { background: #333846; }
       .version-row code { background: #0d0f14; }
+      .log-toolbar input[type="text"] { background: #14161c; color: #d7dae0; border-color: #333846; }
+      #log-pre { background: #0d0f14; color: #9aa2b4; }
     }
     @media (prefers-color-scheme: light) {
       html, body { background: #f5f6fa; color: #3a3f4b; }
@@ -156,6 +178,10 @@
       .update-card { background: #ffffff; border: 1px solid #d8dce6; }
       #update-view li::after { background: #d8dce6; }
       .version-row code { background: #e9ecf4; }
+      .log-toolbar input[type="text"] { background: #ffffff; border-color: #d8dce6; }
+      #log-pre { background: #e9ecf4; color: #5a6274; }
+      .lg-err { color: #c23a2e; }
+      .lg-warn { color: #96690a; }
     }
     .wc #btn-close:hover { background: #e81123 !important; color: #fff !important; }
   </style>
@@ -177,6 +203,7 @@
         <div class="mi-sep"></div>
         <button class="mi" id="mi-repo" data-i18n="menu.repo">打开仓库目录</button>
         <button class="mi" id="mi-logs" data-i18n="menu.logs">打开数据与日志目录</button>
+        <button class="mi" id="mi-viewlog" data-i18n="menu.viewlog">查看运行日志</button>
       </div>
     </div>
     <div class="tb-spacer" data-tauri-drag-region></div>
@@ -224,7 +251,23 @@
           <button class="btn-ghost" id="btn-recheck" data-i18n="btn.recheck">重新检查</button>
           <button class="btn-primary" id="btn-force-rebuild" data-i18n="btn.force">强制重建</button>
           <button class="btn-primary" id="btn-start-update" data-i18n="btn.start">开始更新</button>
+          <button class="btn-primary" id="btn-restart-server" data-i18n="btn.restart">重启服务</button>
+          <button class="btn-ghost" id="btn-rollback" data-i18n="btn.rollback">回滚到更新前</button>
         </div>
+      </div>
+    </div>
+
+    <!-- 运行日志查看窗 -->
+    <div class="modal-mask" id="logmask">
+      <div class="modal log-modal">
+        <h2 data-i18n="log.title">运行日志</h2>
+        <div class="log-toolbar">
+          <input type="text" id="log-filter" data-i18n-ph="log.filterPh" placeholder="过滤关键字…" />
+          <label><input type="checkbox" id="log-follow" checked /><span data-i18n="log.follow">自动滚动</span></label>
+          <button class="btn-ghost" id="log-copy" data-i18n="log.copy">复制全部</button>
+          <button class="btn-primary" id="log-ok" data-i18n="about.ok">确定</button>
+        </div>
+        <pre id="log-pre"></pre>
       </div>
     </div>
 
@@ -235,7 +278,8 @@
         <div class="body" id="close-body" data-i18n="close.body">正在运行的会话与本地服务器将被终止。</div>
         <div class="row">
           <button class="btn-ghost" id="close-cancel" data-i18n="close.cancel">取消</button>
-          <button class="btn-primary" id="close-ok" data-i18n="close.ok">关闭</button>
+          <button class="btn-primary" id="close-tray" data-i18n="close.tray" style="display:none">隐藏到托盘</button>
+          <button class="btn-danger" id="close-ok" data-i18n="close.ok">退出</button>
         </div>
       </div>
     </div>
@@ -276,11 +320,17 @@
         'dead.title': '服务器已停止运行', 'dead.hint': 'dsh web 服务进程意外退出', 'dead.restart': '重启应用',
         'step.pull': '拉取官方最新代码（git pull）', 'step.install': '安装依赖（pnpm install）', 'step.build': '重新构建（pnpm run build）',
         'log.summary': '详细日志',
-        'btn.back': '返回应用', 'btn.recheck': '重新检查', 'btn.force': '强制重建', 'btn.start': '开始更新',
+        'menu.viewlog': '查看运行日志',
+        'log.title': '运行日志', 'log.follow': '自动滚动', 'log.copy': '复制全部', 'log.filterPh': '过滤关键字…',
+        'log.readfail': '日志读取失败：{err}',
+        'btn.back': '返回应用', 'btn.recheck': '重新检查', 'btn.force': '强制重建', 'btn.start': '开始更新', 'btn.restart': '重启服务',
+        'btn.rollback': '回滚到更新前',
         'close.title': '关闭 DeepSeek Harness？', 'close.body': '正在运行的会话与本地服务器将被终止。',
-        'close.cancel': '取消', 'close.ok': '关闭',
+        'close.body2': '「隐藏到托盘」可让会话与服务在后台继续运行；「退出」将终止它们。',
+        'close.tray': '隐藏到托盘',
+        'close.cancel': '取消', 'close.ok': '退出',
         'close.updatingTitle': '更新正在进行中',
-        'close.updatingBody': '构建尚未完成，现在关闭会中断更新并可能损坏产物。\n请等待更新完成（完成后应用自动退出，重新打开即可）。',
+        'close.updatingBody': '构建尚未完成，现在退出会中断更新并可能损坏产物。\n可选择「隐藏到托盘」让构建在后台继续。',
         'close.backUpdate': '返回更新页面',
         'about.site': '官网：', 'about.repo': '官方仓库：', 'about.ok': '确定',
         'about.loading': '正在读取版本信息…',
@@ -288,13 +338,17 @@
         'about.fail': '版本信息读取失败：{err}',
         'unknown': '未知',
         'ph.checking.title': '正在检查更新…', 'ph.checking.hint': '对比本地与官方远端版本',
-        'ph.hasupdate.title': '发现新版本', 'ph.hasupdate.hint': '官方发布了新版本。更新将执行：拉取代码 → 安装依赖 → 重新构建；完成后应用自动退出，重新打开即可用新版本。',
+        'ph.hasupdate.title': '发现新版本', 'ph.hasupdate.hint': '官方发布了新版本。更新将执行：拉取代码 → 安装依赖 → 重新构建；完成后点击「重启服务」即可用新版本。',
         'ph.latest.title': '已是最新版本', 'ph.latest.hint': '当前版本与官方远端一致。\n如上次构建曾被中断，可用「强制重建」重装并重建本地产物。',
         'ph.running.title': '正在更新 DeepSeek Harness', 'ph.running.hint': '构建步骤可能需要几分钟，请勿关闭本窗口',
         'ph.runningForce.title': '正在重建 DeepSeek Harness',
-        'ph.done.title': '更新完成', 'ph.done.hint': '应用即将退出。\n请重新打开 DeepSeek Harness 使用新版本。',
+        'ph.done.title': '更新完成', 'ph.done.hint': '本地服务器当前处于停止状态。\n点击「重启服务」以新版本启动，即可继续使用。',
+        'ph.restarting.title': '正在重启服务…', 'ph.restarting.hint': '正在以新版本启动 dsh web 服务器，页面就绪后自动返回应用',
         'ph.failed.title': '更新失败', 'ph.checkfail.title': '检查失败',
         'fail.step': '步骤「{step}」失败，最近输出：\n{tail}\n\n服务器已恢复旧版运行。',
+        'fail.stashhint': '\n\n本地未提交的改动已自动暂存（git stash），之后可在仓库目录执行 git stash pop 找回。',
+        'fail.rollback': '回滚失败：{err}',
+        'fail.restart': '服务启动失败：{err}\n请确认 Node.js 可用后重试。',
       },
       en: {
         'title.help': 'Help',
@@ -305,11 +359,17 @@
         'dead.title': 'Server Stopped', 'dead.hint': 'The dsh web server exited unexpectedly', 'dead.restart': 'Restart App',
         'step.pull': 'Pull latest code (git pull)', 'step.install': 'Install dependencies (pnpm install)', 'step.build': 'Rebuild (pnpm run build)',
         'log.summary': 'Details',
-        'btn.back': 'Back to App', 'btn.recheck': 'Re-check', 'btn.force': 'Force Rebuild', 'btn.start': 'Start Update',
+        'menu.viewlog': 'View Runtime Logs',
+        'log.title': 'Runtime Logs', 'log.follow': 'Auto-scroll', 'log.copy': 'Copy All', 'log.filterPh': 'Filter keywords…',
+        'log.readfail': 'Failed to read log: {err}',
+        'btn.back': 'Back to App', 'btn.recheck': 'Re-check', 'btn.force': 'Force Rebuild', 'btn.start': 'Start Update', 'btn.restart': 'Restart Server',
+        'btn.rollback': 'Rollback',
         'close.title': 'Close DeepSeek Harness?', 'close.body': 'Running sessions and the local server will be terminated.',
-        'close.cancel': 'Cancel', 'close.ok': 'Close',
+        'close.body2': '"Hide to Tray" keeps sessions and the server running in the background; "Quit" terminates them.',
+        'close.tray': 'Hide to Tray',
+        'close.cancel': 'Cancel', 'close.ok': 'Quit',
         'close.updatingTitle': 'Update in Progress',
-        'close.updatingBody': 'The build is still running. Closing now will interrupt the update and may corrupt artifacts.\nPlease wait for it to finish (the app will exit automatically; reopen it afterwards).',
+        'close.updatingBody': 'The build is still running. Quitting now would interrupt the update and may corrupt artifacts.\nChoose "Hide to Tray" to let the build continue in the background.',
         'close.backUpdate': 'Back to Update',
         'about.site': 'Website: ', 'about.repo': 'Repository: ', 'about.ok': 'OK',
         'about.loading': 'Reading version info…',
@@ -317,13 +377,17 @@
         'about.fail': 'Failed to read version info: {err}',
         'unknown': 'unknown',
         'ph.checking.title': 'Checking for updates…', 'ph.checking.hint': 'Comparing local and remote versions',
-        'ph.hasupdate.title': 'New Version Available', 'ph.hasupdate.hint': 'A new version is available. Update will: pull code → install deps → rebuild. The app will exit when done — reopen it to use the new version.',
+        'ph.hasupdate.title': 'New Version Available', 'ph.hasupdate.hint': 'A new version is available. Update will: pull code → install deps → rebuild. Click "Restart Server" when finished to use the new version.',
         'ph.latest.title': 'Up to Date', 'ph.latest.hint': 'Current version matches the remote.\nIf a previous build was interrupted, use "Force Rebuild" to rebuild local artifacts.',
         'ph.running.title': 'Updating DeepSeek Harness', 'ph.running.hint': 'Building may take a few minutes. Do not close this window.',
         'ph.runningForce.title': 'Rebuilding DeepSeek Harness',
-        'ph.done.title': 'Update Complete', 'ph.done.hint': 'The app is about to exit.\nReopen DeepSeek Harness to use the new version.',
+        'ph.done.title': 'Update Complete', 'ph.done.hint': 'The local server is currently stopped.\nClick "Restart Server" to launch the new version and continue.',
+        'ph.restarting.title': 'Restarting Server…', 'ph.restarting.hint': 'Starting the dsh web server with the new version — returning to the app when ready.',
         'ph.failed.title': 'Update Failed', 'ph.checkfail.title': 'Check Failed',
         'fail.step': 'Step "{step}" failed. Recent output:\n{tail}\n\nThe server has been restored to the previous version.',
+        'fail.stashhint': '\n\nUncommitted local changes were auto-stashed (git stash). Run "git stash pop" in the repository to restore them.',
+        'fail.rollback': 'Rollback failed: {err}',
+        'fail.restart': 'Failed to start the server: {err}\nMake sure Node.js is available and try again.',
       },
     }
     let LANG = 'zh'
@@ -339,6 +403,7 @@
       document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en'
       document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n) })
       document.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.dataset.i18nTitle) })
+      document.querySelectorAll('[data-i18n-ph]').forEach((el) => { el.placeholder = t(el.dataset.i18nPh) })
       if (lastPhase) setPhase(lastPhase, lastPhaseError)
     }
 
@@ -397,15 +462,85 @@
     $('mi-repo').addEventListener('click', () => { closeMenu(); invoke('open_repo_dir') })
     $('mi-logs').addEventListener('click', () => { closeMenu(); invoke('open_logs_dir') })
 
+    // ---------- 运行日志查看窗（2 秒轮询刷新；过滤 / 复制 / 自动滚动） ----------
+    const logMask = $('logmask')
+    const logPre = $('log-pre')
+    const logFilterEl = $('log-filter')
+    const logFollowCb = $('log-follow')
+    let rawLog = ''
+    let logTimer = null
+    const renderLog = () => {
+      const kw = logFilterEl.value.trim().toLowerCase()
+      const frag = document.createDocumentFragment()
+      for (const ln of rawLog.split('\n')) {
+        if (kw && !ln.toLowerCase().includes(kw)) continue
+        const d = document.createElement('div')
+        d.textContent = ln || '\u00a0'
+        if (/\b(error|fatal|panicked|panic)\b|错误|失败/i.test(ln)) d.className = 'lg-err'
+        else if (/warn|deprecated|警告/i.test(ln)) d.className = 'lg-warn'
+        frag.appendChild(d)
+      }
+      logPre.replaceChildren(frag)
+      if (logFollowCb.checked) logPre.scrollTop = logPre.scrollHeight
+    }
+    const refreshLog = async () => {
+      try { rawLog = await invoke('read_log') } catch (err) { rawLog = t('log.readfail', { err }) }
+      renderLog()
+    }
+    $('mi-viewlog').addEventListener('click', () => {
+      closeMenu()
+      logMask.classList.add('open')
+      refreshLog()
+      clearInterval(logTimer)
+      logTimer = setInterval(() => { if (logMask.classList.contains('open')) refreshLog() }, 2000)
+    })
+    $('log-ok').addEventListener('click', () => { logMask.classList.remove('open'); clearInterval(logTimer) })
+    logFilterEl.addEventListener('input', renderLog)
+    logFollowCb.addEventListener('change', () => { if (logFollowCb.checked) logPre.scrollTop = logPre.scrollHeight })
+    // 上滚离底部 → 暂停跟随（取消勾选）；拉回底部 → 恢复跟随
+    logPre.addEventListener('scroll', () => {
+      const atBottom = logPre.scrollTop + logPre.clientHeight >= logPre.scrollHeight - 30
+      if (!atBottom && logFollowCb.checked && logPre.scrollHeight > logPre.clientHeight) logFollowCb.checked = false
+    })
+    $('log-copy').addEventListener('click', async () => {
+      const text = [...logPre.children].map((d) => d.textContent).join('\n')
+      try { await navigator.clipboard.writeText(text) } catch {
+        // WebView2 剪贴板 API 不可用时的兜底
+        const ta = document.createElement('textarea')
+        ta.value = text
+        document.body.appendChild(ta)
+        ta.select()
+        document.execCommand('copy')
+        ta.remove()
+      }
+    })
+
     // ---------- 服务器就绪 → iframe 加载 dsh ----------
+    const showFrame = () => {
+      frame.style.display = 'block'
+      // 短淡入掩盖首帧绘制残影，视觉过渡更顺滑
+      frame.classList.remove('fade-in')
+      void frame.offsetWidth
+      frame.classList.add('fade-in')
+    }
     const enterApp = () => {
       mode = 'app'
       $('loading-view').style.display = 'none'
       $('update-view').style.display = 'none'
-      frame.style.display = 'block'
+      showFrame()
     }
+    // 重启服务场景：置位后等 iframe load 完成再一次性切视图（与首启 loading 页
+    // 同一策略），否则会先露出一帧未渲染的白屏（闪屏根因）；定时器兜底防挂死
+    let showFrameOnNextLoad = false
+    let showFrameFallbackTimer = null
     frame.addEventListener('load', () => {
       invoke('shell_report', { msg: 'iframe 加载完成: ' + frame.src }).catch(() => {})
+      if (showFrameOnNextLoad) {
+        clearTimeout(showFrameFallbackTimer)
+        showFrameOnNextLoad = false
+        backToApp()
+        return
+      }
       if (mode !== 'update') enterApp()
     })
 
@@ -417,6 +552,26 @@
     const titlebar = $('titlebar')
     const phaseIcon = $('phase-icon')
     let updateForceMode = false
+    // 失败时可回滚的目标提交（prev_head），null = 不可回滚
+    let rollbackCommit = null
+    // 更新页日志自动跟随：上滚暂停，回到底部恢复
+    let updateLogFollow = true
+    const updLogEl = $('update-log')
+    updLogEl.addEventListener('scroll', () => {
+      const atBottom = updLogEl.scrollTop + updLogEl.clientHeight >= updLogEl.scrollHeight - 30
+      if (!atBottom && updLogEl.scrollHeight > updLogEl.clientHeight) updateLogFollow = false
+      else if (atBottom) updateLogFollow = true
+    })
+
+    // 重启服务/回滚后：保持当前转圈页直到 iframe load 完成（server-restored
+    // 会重设 src）再一次性切视图，消除白屏闪烁；15 秒兜底防 load 挂死
+    const enterAppAfterLoad = () => {
+      showFrameOnNextLoad = true
+      clearTimeout(showFrameFallbackTimer)
+      showFrameFallbackTimer = setTimeout(() => {
+        if (showFrameOnNextLoad) { showFrameOnNextLoad = false; backToApp() }
+      }, 15000)
+    }
 
     const ICONS = { spin: '<div class="spin"></div>', up: '↑', ok: '✓', fail: '✗' }
     const setIcon = (kind) => {
@@ -429,13 +584,14 @@
       lastPhase = phase
       lastPhaseError = errorText || null
       const P = {
-        checking:  { icon: 'spin', titleKey: 'ph.checking.title', hintKey: 'ph.checking.hint', steps: false, log: false, version: false, btns: ['back'] },
-        hasupdate: { icon: 'up', titleKey: 'ph.hasupdate.title', hintKey: 'ph.hasupdate.hint', steps: true, log: false, version: true, btns: ['back', 'start'] },
-        latest:    { icon: 'ok', titleKey: 'ph.latest.title', hintKey: 'ph.latest.hint', steps: false, log: false, version: false, btns: ['back', 'force'] },
-        running:   { icon: null, titleKey: 'ph.running.title', hintKey: 'ph.running.hint', steps: true, log: true, version: false, btns: [] },
-        done:      { icon: 'ok', titleKey: 'ph.done.title', hintKey: 'ph.done.hint', steps: true, log: true, version: false, btns: [] },
-        failed:    { icon: 'fail', titleKey: 'ph.failed.title', hintKey: '', steps: true, log: true, version: false, btns: ['back', 'force'] },
-        checkfail: { icon: 'fail', titleKey: 'ph.checkfail.title', hintKey: '', steps: false, log: false, version: false, btns: ['back', 'recheck'] },
+        checking:   { icon: 'spin', titleKey: 'ph.checking.title', hintKey: 'ph.checking.hint', steps: false, log: false, version: false, btns: ['back'] },
+        hasupdate:  { icon: 'up', titleKey: 'ph.hasupdate.title', hintKey: 'ph.hasupdate.hint', steps: true, log: false, version: true, btns: ['back', 'start'] },
+        latest:     { icon: 'ok', titleKey: 'ph.latest.title', hintKey: 'ph.latest.hint', steps: false, log: false, version: false, btns: ['back', 'force'] },
+        running:    { icon: null, titleKey: 'ph.running.title', hintKey: 'ph.running.hint', steps: true, log: true, version: false, btns: [] },
+        done:       { icon: 'ok', titleKey: 'ph.done.title', hintKey: 'ph.done.hint', steps: true, log: true, version: false, btns: ['restart'] },
+        restarting: { icon: 'spin', titleKey: 'ph.restarting.title', hintKey: 'ph.restarting.hint', steps: true, log: true, version: false, btns: [] },
+        failed:     { icon: 'fail', titleKey: 'ph.failed.title', hintKey: '', steps: true, log: true, version: false, btns: ['back', 'force'] },
+        checkfail:  { icon: 'fail', titleKey: 'ph.checkfail.title', hintKey: '', steps: false, log: false, version: false, btns: ['back', 'recheck'] },
       }[phase]
       setIcon(P.icon)
       $('update-title').textContent = updateForceMode && phase === 'running' ? t('ph.runningForce.title') : t(P.titleKey)
@@ -447,7 +603,7 @@
       $('version-row').style.display = P.version ? 'flex' : 'none'
       if (errorText) { $('update-error').textContent = errorText; $('update-error').style.display = 'block' }
       else $('update-error').style.display = 'none'
-      const btnMap = { back: 'btn-back-app', recheck: 'btn-recheck', force: 'btn-force-rebuild', start: 'btn-start-update' }
+      const btnMap = { back: 'btn-back-app', recheck: 'btn-recheck', force: 'btn-force-rebuild', start: 'btn-start-update', restart: 'btn-restart-server', rollback: 'btn-rollback' }
       for (const [k, id] of Object.entries(btnMap)) {
         $(id).style.display = P.btns.includes(k) ? 'inline-block' : 'none'
       }
@@ -457,7 +613,7 @@
       mode = 'app'
       titlebar.classList.remove('updating')
       $('update-view').style.display = 'none'
-      frame.style.display = 'block'
+      showFrame()
     }
 
     const runCheck = async () => {
@@ -485,7 +641,8 @@
       frame.style.display = 'none'
       $('update-view').style.display = 'flex'
       document.querySelectorAll('#steps li').forEach(li => li.dataset.status = 'pending')
-      $('update-log').textContent = ''
+      $('update-log').replaceChildren()
+      updateLogFollow = true
       $('update-log-wrap').open = false
       runCheck()
     }
@@ -493,6 +650,7 @@
     // 点「开始更新」/「强制重建」：真正执行更新流程
     const startUpdate = async (force = false) => {
       updateForceMode = force
+      rollbackCommit = null
       titlebar.classList.add('updating')
       setPhase('running')
       try {
@@ -504,13 +662,16 @@
           return
         }
         if (result.ok) {
-          // 成功：不恢复服务器、不重启——提示后杀服务器并直接退出，
-          // 用户重新打开应用即使用新版本
+          // 成功：保留壳页面与更新结果，等待用户手动点击「重启服务」
+          // （服务器在构建前已关闭；重启后 server-restored 事件会重载 iframe）
+          titlebar.classList.remove('updating')
           setPhase('done')
-          await new Promise(r => setTimeout(r, 1500))
-          await invoke('exit_app')
         } else {
-          setPhase('failed', t('fail.step', { step: result.failed_step, tail: result.output_tail || '(无输出)' }))
+          let failMsg = t('fail.step', { step: result.failed_step, tail: result.output_tail || '(无输出)' })
+          if (result.stashed_changes) failMsg += t('fail.stashhint')
+          setPhase('failed', failMsg)
+          rollbackCommit = result.prev_head || null
+          if (rollbackCommit) $('btn-rollback').style.display = 'inline-block'
           titlebar.classList.remove('updating')
         }
       } catch (err) {
@@ -523,6 +684,36 @@
     $('btn-recheck').addEventListener('click', runCheck)
     $('btn-force-rebuild').addEventListener('click', () => startUpdate(true))
     $('btn-start-update').addEventListener('click', () => startUpdate(false))
+
+    // 点「重启服务」：以新版本启动 dsh web；保持转圈页直到 iframe 装载完成
+    const restartServer = async () => {
+      setPhase('restarting')
+      try {
+        await invoke('restart_server')
+        enterAppAfterLoad()
+      } catch (err) {
+        // 启动失败留在更新页，「重启服务」按钮保留可重试
+        setPhase('done', t('fail.restart', { err }))
+      }
+    }
+    $('btn-restart-server').addEventListener('click', restartServer)
+
+    // 点「回滚到更新前」：reset --hard 回基线提交并重启服务器（旧版继续可用）
+    $('btn-rollback').addEventListener('click', async () => {
+      if (!rollbackCommit) return
+      const btn = $('btn-rollback')
+      btn.disabled = true
+      try {
+        await invoke('rollback_update', { commit: rollbackCommit })
+        rollbackCommit = null
+        titlebar.classList.remove('updating')
+        enterAppAfterLoad()
+      } catch (err) {
+        setPhase('failed', t('fail.rollback', { err }))
+      } finally {
+        btn.disabled = false
+      }
+    })
 
     $('mi-update').addEventListener('click', () => { closeMenu(); openUpdatePage() })
 
@@ -539,6 +730,11 @@
     // ---------- 关闭确认（自定义模态，替代系统对话框） ----------
     $('close-cancel').addEventListener('click', () => $('close-mask').classList.remove('open'))
     $('close-ok').addEventListener('click', () => invoke('confirm_close'))
+    // 隐藏到托盘：关弹窗 + 隐藏窗口（服务与会话继续后台运行，托盘左键恢复）
+    $('close-tray').addEventListener('click', () => {
+      $('close-mask').classList.remove('open')
+      win.hide().catch((err) => invoke('shell_report', { msg: '隐藏失败: ' + err }).catch(() => {}))
+    })
 
     // ---------- 服务器断线 ----------
     $('btn-restart').addEventListener('click', () => invoke('restart_app'))
@@ -555,7 +751,7 @@
       } catch { /* 命令不可用则等待事件 */ }
       await listen('server-ready', (e) => loadApp(e.payload))
       await listen('server-restored', (e) => {
-        // 更新失败后服务器恢复：重新加载 iframe（load 事件里回到 app 模式）
+        // 更新失败自动恢复 / 手动重启服务就绪：重新加载 iframe（load 事件里回到 app 模式）
         frame.src = e.payload.url
       })
       await listen('server-dead', () => {
@@ -566,17 +762,24 @@
         frame.style.display = 'none'
       })
       await listen('close-requested', (e) => {
-        // Rust 侧拦截了关闭请求：正常 → 关闭确认；更新中 → 只提示不关闭
-        const updating = !!(e.payload && e.payload.updating)
+        // Rust 侧拦截了关闭请求，按来源呈现：
+        // titlebar(X) → 三选弹窗（取消/隐藏到托盘/退出）
+        // tray(托盘退出) → 直接确认退出
+        // 更新中 → 不允许退出，但可隐藏到托盘让构建后台继续
+        const p = e.payload || {}
+        const updating = !!p.updating
+        const fromTray = p.source === 'tray'
         if (updating) {
           $('close-title').textContent = t('close.updatingTitle')
           $('close-body').textContent = t('close.updatingBody')
           $('close-ok').style.display = 'none'
+          $('close-tray').style.display = ''
           $('close-cancel').textContent = t('close.backUpdate')
         } else {
           $('close-title').textContent = t('close.title')
-          $('close-body').textContent = t('close.body')
+          $('close-body').textContent = fromTray ? t('close.body') : t('close.body2')
           $('close-ok').style.display = ''
+          $('close-tray').style.display = fromTray ? 'none' : ''
           $('close-cancel').textContent = t('close.cancel')
         }
         $('close-mask').classList.add('open')
@@ -586,10 +789,19 @@
         if (li) li.dataset.status = e.payload.status
       })
       await listen('update-log', (e) => {
-        const el = $('update-log')
-        el.textContent += e.payload.text
-        if (el.textContent.length > 6000) el.textContent = el.textContent.slice(-6000)
-        el.scrollTop = el.scrollHeight
+        // 逐行渲染为 DOM：错误/警告行高亮；超出上限丢最旧行
+        const frag = document.createDocumentFragment()
+        for (const ln of e.payload.text.split('\n')) {
+          if (ln === '') continue
+          const d = document.createElement('div')
+          d.textContent = ln
+          if (/\b(error|fatal|panicked|panic)\b|错误|失败/i.test(ln)) d.className = 'lg-err'
+          else if (/warn|deprecated|警告/i.test(ln)) d.className = 'lg-warn'
+          frag.appendChild(d)
+        }
+        updLogEl.appendChild(frag)
+        while (updLogEl.childElementCount > 600) updLogEl.removeChild(updLogEl.firstChild)
+        if (updateLogFollow) updLogEl.scrollTop = updLogEl.scrollHeight
       })
     }
     bootstrap()

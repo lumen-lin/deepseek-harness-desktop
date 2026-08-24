@@ -1,9 +1,10 @@
-//! 壳页面 Tauri 命令、帧守卫注入脚本、外部链接转发。
+//! 壳页面 Tauri 命令、帧守卫注入脚本、外部链接转发、窗口状态与日志读取。
 
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
 use crate::logging::{log, log_dir};
@@ -46,6 +47,68 @@ pub(crate) fn open_repo_dir(app: AppHandle) -> Result<(), String> {
 pub(crate) fn open_logs_dir(app: AppHandle) -> Result<(), String> {
     log(&app, "打开日志目录");
     open_in_explorer(&log_dir().to_string_lossy())
+}
+
+/// Tauri 命令：读取运行日志尾部（内置日志查看窗展示用），最多返回末尾约 400KB。
+#[tauri::command]
+pub(crate) fn read_log() -> Result<String, String> {
+    use std::io::{Read, Seek, SeekFrom};
+    const MAX_BYTES: u64 = 400_000;
+    let path = log_dir().join("desktop.log");
+    let mut file = std::fs::File::open(&path).map_err(|e| format!("无法打开日志文件: {e}"))?;
+    let len = file.metadata().map_err(|e| e.to_string())?.len();
+    let skip = len.saturating_sub(MAX_BYTES);
+    file.seek(SeekFrom::Start(skip)).map_err(|e| e.to_string())?;
+    let mut buf = Vec::with_capacity((len - skip).min(8 << 20) as usize);
+    file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    let mut text = String::from_utf8_lossy(&buf).into_owned();
+    if skip > 0 {
+        // 掐掉被截断的首行残片，并提示只显示了末尾
+        if let Some(pos) = text.find('\n') {
+            text.drain(..=pos);
+        }
+        text.insert_str(0, "…（日志过长，仅显示末尾部分）\n");
+    }
+    Ok(text)
+}
+
+// ---------- 窗口大小与位置记忆 ----------
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct WindowState {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub maximized: bool,
+}
+
+fn window_state_path() -> PathBuf {
+    repo::data_dir().join("window.json")
+}
+
+/// 启动时读取上次退出时的窗口状态（无记录返回 None，用默认尺寸居中）。
+pub(crate) fn load_window_state() -> Option<WindowState> {
+    let text = std::fs::read_to_string(window_state_path()).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// 记录当前窗口物理坐标/尺寸与最大化状态（CloseRequested 与 Destroyed 时调用；
+/// 物理像素存储，跨 DPI 显示器恢复可能偏移，可接受）。
+pub(crate) fn save_window_state(win: &tauri::WebviewWindow) {
+    let Ok(pos) = win.outer_position() else { return };
+    let Ok(size) = win.inner_size() else { return };
+    let state = WindowState {
+        x: pos.x,
+        y: pos.y,
+        w: size.width,
+        h: size.height,
+        maximized: win.is_maximized().unwrap_or(false),
+    };
+    let _ = std::fs::create_dir_all(repo::data_dir());
+    if let Ok(json) = serde_json::to_string(&state) {
+        let _ = std::fs::write(window_state_path(), json);
+    }
 }
 
 #[derive(Serialize)]
@@ -153,11 +216,10 @@ pub(crate) fn confirm_close(app: AppHandle) {
     }
 }
 
-/// Tauri 命令：更新完成后由前端调用 —— 杀服务器并直接退出应用（不重启）。
-/// 用户重新打开即使用新版本。
-#[tauri::command]
-pub(crate) fn exit_app(app: AppHandle) {
+/// 托盘菜单「退出」：用户已通过菜单明确表达退出意图，不再二次弹窗
+/// （窗口可能正藏在托盘里，前端弹窗根本看不到），直接结束进程。
+pub(crate) fn force_exit(app: &AppHandle) {
     SKIP_CLOSE_CONFIRM.store(true, Ordering::SeqCst);
-    kill_server(&app);
+    kill_server(app);
     app.exit(0);
 }
