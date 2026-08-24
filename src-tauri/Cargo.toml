@@ -1,0 +1,33 @@
+[package]
+name = "deepseek-harness-desktop"
+version = "1.1.1"
+description = "DeepSeek Harness 桌面端 — Tauri 壳，启动本仓库的 dsh web 服务器并加载其界面"
+authors = ["DeepSeek Harness Desktop Contributors"]
+edition = "2024"
+
+# 产物名：连字符形式（窗口标题/元数据仍用 productName 的空格形式）
+[[bin]]
+name = "DeepSeek-Harness"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-single-instance = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+notify = "8"
+
+[profile.release]
+# 追求小体积：开 LTO + 去符号 + 单代码生成单元
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "s"
+panic = "abort"

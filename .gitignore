@@ -1,0 +1,23 @@
+# Rust 编译产物
+/src-tauri/target*
+/src-tauri/target-privclean
+
+# 依赖
+/node_modules
+
+# 运行时数据
+/logs
+/data
+
+# 构建生成
+/src-tauri/gen
+
+# 构建/包管理缓存
+/.bundle-cache
+/pnpm-cache
+/pnpm
+/node-addon-native-custom-loader
+
+# 系统文件
+Thumbs.db
+.DS_Store

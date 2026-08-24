@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DeepSeek Harness</title>
+  <style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; overflow: hidden;
+      font-family: system-ui, "Segoe UI", "Microsoft YaHei", sans-serif; }
+    body { display: flex; flex-direction: column; }
+
+    /* ---------- 自绘标题栏 ---------- */
+    #titlebar { display: flex; align-items: stretch; height: 40px; flex: none;
+      user-select: none; -webkit-user-select: none; }
+    .tb-title { font-size: 13px; white-space: nowrap; }
+    .tb-spacer { flex: 1; }
+    /* 左侧品牌区整块为帮助入口（点击弹菜单，不参与拖拽）；菜单挂其下方 */
+    #menu-wrap { position: relative; display: flex; align-items: center; }
+    .tb-brand { display: flex; align-items: center; gap: 8px; height: 40px;
+      padding: 0 12px; border: none; background: none; cursor: default; }
+    #help-menu { position: absolute; top: 40px; left: 0; min-width: 230px;
+      border-radius: 8px; padding: 5px; display: none; z-index: 100;
+      box-shadow: 0 6px 22px rgba(0,0,0,.28); }
+    #help-menu.open { display: block; }
+    .mi { display: block; width: 100%; text-align: left; padding: 8px 12px;
+      font-size: 13px; border: none; background: none; border-radius: 6px; cursor: default; }
+    .mi-sep { height: 1px; margin: 5px 8px; }
+    /* 菜单遮罩：菜单展开时盖住内容区（含 iframe），点击任意处关闭菜单 */
+    #menu-scrim { position: absolute; inset: 0; z-index: 50; display: none; }
+    #menu-scrim.open { display: block; }
+    .wc { display: flex; }
+    .wc button { width: 46px; height: 40px; border: none; background: none;
+      font-size: 11px; cursor: default; display: flex; align-items: center; justify-content: center; }
+
+    /* ---------- 内容区 ---------- */
+    #content { flex: 1; position: relative; display: flex; min-height: 0; }
+    #dsh-frame { flex: 1; border: none; width: 100%; display: none; }
+    .overlay { position: absolute; inset: 0; }
+
+    /* 加载视图 */
+    #loading-view { display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 22px; }
+    .ring { width: 42px; height: 42px; border-radius: 50%;
+      border: 3px solid #c9cede; border-top-color: #4f8cff; animation: spin .9s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .title { font-size: 15px; letter-spacing: .5px; }
+    .hint { font-size: 12px; display: none; }
+
+    /* 更新进度视图 */
+    #update-view { display: none; flex-direction: column; padding: 26px; align-items: center; justify-content: center; }
+    .update-card { width: 540px; max-width: 92%; border-radius: 14px; padding: 28px 30px 20px;
+      display: flex; flex-direction: column; }
+    .phase-icon { width: 46px; height: 46px; border-radius: 50%; align-items: center;
+      justify-content: center; font-size: 20px; margin-bottom: 16px; display: none; }
+    .phase-icon .spin { width: 20px; height: 20px; border-radius: 50%; border: 2.5px solid currentColor;
+      border-top-color: transparent; animation: spin .8s linear infinite; }
+    .phase-icon.checking { background: rgba(79,140,255,.14); color: #4f8cff; display: flex; }
+    .phase-icon.up { background: rgba(239,159,39,.14); color: #ef9f27; display: flex; }
+    .phase-icon.ok { background: rgba(58,166,117,.14); color: #3aa675; display: flex; }
+    .phase-icon.fail { background: rgba(210,85,77,.14); color: #d2554d; display: flex; }
+    #update-view h1 { font-size: 17px; margin: 0 0 6px; }
+    .update-hint { font-size: 12.5px; line-height: 1.6; margin-bottom: 18px; white-space: pre-line; }
+    .version-row { display: none; align-items: center; gap: 10px; margin-bottom: 18px; font-size: 13px; }
+    .version-row code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
+      padding: 3px 10px; border-radius: 6px; }
+    .version-row .ver-arrow { opacity: .55; }
+    #update-view ol { list-style: none; margin: 0 0 4px; padding: 0; font-size: 13px; line-height: 1.6; display: none; }
+    #update-view.show-steps ol { display: block; }
+    #update-view li { position: relative; padding: 7px 0 7px 30px; }
+    #update-view li::before { content: ""; position: absolute; left: 9px; top: 50%;
+      transform: translateY(-50%); width: 9px; height: 9px; border-radius: 50%; }
+    #update-view li::after { content: ""; position: absolute; left: 13px; top: 26px; bottom: -7px; width: 1px; }
+    #update-view li:last-child::after { display: none; }
+    li[data-status="pending"] { opacity: .5; }
+    li[data-status="pending"]::before { background: #8a90a0; }
+    li[data-status="running"] { color: #4f8cff; opacity: 1; }
+    li[data-status="running"]::before { background: #4f8cff; }
+    li[data-status="done"] { color: #3aa675; opacity: 1; }
+    li[data-status="done"]::before { background: #3aa675; }
+    li[data-status="failed"] { color: #d2554d; opacity: 1; }
+    li[data-status="failed"]::before { background: #d2554d; }
+    #update-log-wrap { display: none; flex-direction: column; margin-top: 10px; min-height: 0; }
+    #update-view.show-log #update-log-wrap { display: flex; }
+    #update-log-wrap summary { font-size: 12px; cursor: pointer; opacity: .65; user-select: none; }
+    #update-log-wrap[open] summary { margin-bottom: 8px; }
+    #update-log { overflow: auto; margin: 0; padding: 10px; border-radius: 8px; font-size: 11px;
+      white-space: pre-wrap; word-break: break-all; max-height: 170px; }
+    #update-error { display: none; color: #d2554d; font-size: 12px; margin-top: 10px; white-space: pre-wrap; }
+    .update-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
+    /* 更新中：关闭按钮灰显提示不可关闭 */
+    #titlebar.updating #btn-close { opacity: .35; }
+
+    /* 服务器断线视图 */
+    #server-dead-view { display: none; flex-direction: column; align-items: center;
+      justify-content: center; gap: 14px; }
+    #server-dead-view.show { display: flex; }
+    #server-dead-view .dead-hint { font-size: 12px; opacity: .6; }
+
+    /* 模态框（确认更新 / 关于） */
+    .modal-mask { position: absolute; inset: 0; display: none; align-items: center;
+      justify-content: center; background: rgba(0,0,0,.42); z-index: 200; }
+    .modal-mask.open { display: flex; }
+    .modal { width: 430px; border-radius: 12px; padding: 22px 24px; }
+    .modal h2 { font-size: 16px; margin: 0 0 10px; }
+    .modal .body { font-size: 13px; line-height: 1.7; white-space: pre-line; }
+    .modal .row { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+    .about-site { margin-top: 10px; }
+    .about-site + .about-site { margin-top: 5px; }
+    .about-site a { color: #4f8cff; }
+    .about-sep { margin: 0 8px; color: #888; }
+    .modal button, .update-actions button, #server-dead-view button {
+      min-width: 88px; padding: 8px 16px; border-radius: 8px;
+      border: 1px solid transparent; font-size: 13px; cursor: default;
+      font-family: inherit; transition: background .12s ease; }
+    .btn-primary { background: #4f8cff; color: #fff; }
+    .btn-primary:hover { background: #3d7ef2; }
+    .btn-ghost { background: none; }
+
+    /* ---------- 深浅色 ---------- */
+    @media (prefers-color-scheme: dark) {
+      html, body { background: #14161c; color: #d7dae0; }
+      #titlebar { background: #1b1e27; }
+      .tb-brand:hover, .wc button:hover { background: #2a2e3a; }
+      #help-menu { background: #232734; border: 1px solid #333846; }
+      .mi:hover { background: #2f3442; }
+      .mi-sep { background: #333846; }
+      .hint { color: #6b7280; }
+      .update-hint { color: #6b7280; }
+      #update-log { background: #0d0f14; color: #9aa2b4; }
+      .modal { background: #232734; border: 1px solid #333846; }
+      .btn-ghost { color: #d7dae0; border-color: #3a4050; }
+      .btn-ghost:hover { background: #2f3442; }
+      #dsh-frame { background: #14161c; }
+      #loading-view, #server-dead-view { background: #14161c; }
+      .update-card { background: #1b1e27; border: 1px solid #333846; }
+      #update-view li::after { background: #333846; }
+      .version-row code { background: #0d0f14; }
+    }
+    @media (prefers-color-scheme: light) {
+      html, body { background: #f5f6fa; color: #3a3f4b; }
+      #titlebar { background: #edeef4; }
+      .tb-brand:hover, .wc button:hover { background: #dfe2ec; }
+      #help-menu { background: #ffffff; border: 1px solid #d8dce6; }
+      .mi:hover { background: #edf0f7; }
+      .mi-sep { background: #e2e5ee; }
+      .hint { color: #8a90a0; }
+      .update-hint { color: #8a90a0; }
+      #update-log { background: #e9ecf4; color: #5a6274; }
+      .modal { background: #ffffff; border: 1px solid #d8dce6; }
+      .btn-ghost { color: #3a3f4b; border-color: #c8cdd9; }
+      .btn-ghost:hover { background: #edf0f7; }
+      #dsh-frame { background: #f5f6fa; }
+      #loading-view, #server-dead-view { background: #f5f6fa; }
+      .update-card { background: #ffffff; border: 1px solid #d8dce6; }
+      #update-view li::after { background: #d8dce6; }
+      .version-row code { background: #e9ecf4; }
+    }
+    .wc #btn-close:hover { background: #e81123 !important; color: #fff !important; }
+  </style>
+</head>
+<body>
+  <!-- 自绘标题栏：左侧品牌区整块为帮助入口（点击弹菜单），中缝可拖拽（双击最大化/还原） -->
+  <header id="titlebar">
+    <div id="menu-wrap">
+      <button class="tb-brand" id="btn-help" title="帮助" data-i18n-title="title.help">
+        <svg width="18" height="18" viewBox="0 0 50 50" fill="none">
+          <style>path{fill:#4D6BFE}@media(prefers-color-scheme:light){path{fill:#000}}@media(prefers-color-scheme:dark){path{fill:#fff}}</style>
+          <path d="M48.8354 10.0479C48.3232 9.79199 48.1025 10.2798 47.8032 10.5278C47.7007 10.6079 47.6143 10.7119 47.5273 10.8076C46.7793 11.624 45.9048 12.1597 44.7622 12.0957C43.0923 12 41.666 12.5356 40.4058 13.8398C40.1377 12.2319 39.2476 11.272 37.8926 10.6558C37.1836 10.3359 36.4668 10.0156 35.9702 9.31982C35.6235 8.82373 35.5293 8.27197 35.356 7.72754C35.2456 7.3999 35.1353 7.06396 34.7651 7.00781C34.3633 6.94385 34.2056 7.2876 34.0479 7.57568C33.418 8.75195 33.1733 10.0479 33.1973 11.3599C33.2524 14.312 34.4736 16.6641 36.8999 18.3359C37.1758 18.5278 37.2466 18.7197 37.1597 19C36.9946 19.5757 36.7974 20.1357 36.624 20.7119C36.5137 21.0801 36.3486 21.1597 35.9624 21C34.6309 20.4321 33.481 19.5918 32.4644 18.5757C30.7393 16.8721 29.1792 14.9917 27.2334 13.52C26.7764 13.1758 26.3193 12.856 25.8467 12.5518C23.8618 10.584 26.1069 8.96777 26.627 8.77588C27.1704 8.57568 26.8159 7.8877 25.0591 7.896C23.3022 7.90381 21.6953 8.50391 19.647 9.30371C19.3477 9.42383 19.0322 9.51172 18.7095 9.58398C16.8501 9.22363 14.9199 9.14355 12.9033 9.37598C9.10596 9.80762 6.07275 11.6396 3.84326 14.7681C1.16455 18.5278 0.53418 22.7998 1.30664 27.2559C2.11768 31.9521 4.46582 35.8398 8.07373 38.8799C11.8159 42.0322 16.1255 43.5762 21.041 43.2803C24.0269 43.104 27.3516 42.6963 31.1016 39.4561C32.0469 39.936 33.0396 40.1279 34.686 40.272C35.9546 40.3921 37.1758 40.208 38.1211 40.0078C39.6021 39.688 39.4995 38.2881 38.9639 38.0322C34.623 35.9678 35.5762 36.8081 34.71 36.1279C36.9155 33.4639 40.2402 30.6958 41.54 21.728C41.6426 21.0161 41.5557 20.5679 41.54 19.9917C41.5322 19.6396 41.6108 19.5039 42.0049 19.4639C43.0923 19.3359 44.1479 19.0317 45.1167 18.4878C47.9292 16.9199 49.064 14.3438 49.3315 11.2559C49.3711 10.7837 49.3237 10.2959 48.8354 10.0479ZM24.3262 37.8398C20.1196 34.4639 18.0791 33.3521 17.2358 33.3999C16.4482 33.4482 16.5898 34.3682 16.7632 34.9678C16.9443 35.5601 17.1812 35.9683 17.5117 36.4878C17.7402 36.832 17.8979 37.3442 17.2832 37.728C15.9282 38.584 13.5728 37.4399 13.4624 37.3838C10.7207 35.7358 8.42822 33.5601 6.81348 30.584C5.25342 27.7197 4.34766 24.6479 4.19775 21.3677C4.1582 20.5757 4.38672 20.2959 5.15869 20.1519C6.17529 19.96 7.22314 19.9199 8.23926 20.0718C12.5327 20.7119 16.1885 22.6719 19.2529 25.7759C21.002 27.5439 22.3252 29.6558 23.6885 31.7202C25.1377 33.9121 26.6978 36 28.6831 37.7119C29.3843 38.312 29.9434 38.7681 30.479 39.104C28.8643 39.2881 26.1699 39.3281 24.3262 37.8398ZM26.3433 24.6001C26.3433 24.248 26.6191 23.9678 26.9658 23.9678C27.0444 23.9678 27.1152 23.9839 27.1782 24.0078C27.2651 24.04 27.3438 24.0879 27.4067 24.1602C27.5171 24.272 27.5801 24.4321 27.5801 24.6001C27.5801 24.9521 27.3042 25.2319 26.9575 25.2319C26.6108 25.2319 26.3433 24.9521 26.3433 24.6001ZM32.6064 27.8799C32.2046 28.0479 31.8027 28.1919 31.4165 28.208C30.8179 28.2397 30.1641 27.9922 29.8096 27.688C29.2583 27.2158 28.8643 26.9521 28.6987 26.1279C28.6279 25.7759 28.6675 25.2319 28.7305 24.9199C28.8721 24.248 28.7144 23.8159 28.2495 23.4238C27.8716 23.104 27.3911 23.0161 26.8633 23.0161C26.666 23.0161 26.4849 22.9277 26.3511 22.856C26.1304 22.7441 25.9492 22.4639 26.1226 22.1201C26.1777 22.0078 26.4458 21.7358 26.5088 21.688C27.2256 21.272 28.0527 21.4077 28.8169 21.7197C29.5259 22.0161 30.0615 22.5601 30.834 23.3281C31.6216 24.2559 31.7632 24.5117 32.2124 25.208C32.5669 25.752 32.8901 26.312 33.1104 26.9521C33.2446 27.3521 33.0713 27.6802 32.6064 27.8799Z"/>
+        </svg>
+        <span class="tb-title">DeepSeek Harness</span>
+      </button>
+      <div id="help-menu">
+        <button class="mi" id="mi-update" data-i18n="menu.update">检查并更新 Harness</button>
+        <button class="mi" id="mi-about" data-i18n="menu.about">关于 DeepSeek Harness</button>
+        <div class="mi-sep"></div>
+        <button class="mi" id="mi-repo" data-i18n="menu.repo">打开仓库目录</button>
+        <button class="mi" id="mi-logs" data-i18n="menu.logs">打开数据与日志目录</button>
+      </div>
+    </div>
+    <div class="tb-spacer" data-tauri-drag-region></div>
+    <div class="wc">
+      <button id="btn-min" title="最小化" data-i18n-title="wc.min">&#x2500;</button>
+      <button id="btn-max" title="最大化" data-i18n-title="wc.max">&#x25A2;</button>
+      <button id="btn-close" title="关闭" data-i18n-title="wc.close">&#x2715;</button>
+    </div>
+  </header>
+
+  <!-- 内容区：加载页 / dsh 页面(iframe) / 更新进度页，三者互斥 -->
+  <main id="content">
+    <div class="overlay" id="loading-view">
+      <div class="ring"></div>
+      <div class="title" data-i18n="loading.title">正在启动 DeepSeek Harness…</div>
+    </div>
+    <iframe id="dsh-frame" title="DeepSeek Harness"></iframe>
+    <div id="menu-scrim"></div>
+    <!-- 服务器断线页：服务器进程意外退出时显示 -->
+    <div class="overlay" id="server-dead-view">
+      <div class="title" data-i18n="dead.title">服务器已停止运行</div>
+      <div class="dead-hint" data-i18n="dead.hint">dsh web 服务进程意外退出</div>
+      <button class="btn-primary" id="btn-restart" data-i18n="dead.restart">重启应用</button>
+    </div>
+    <div class="overlay" id="update-view">
+      <div class="update-card">
+        <div class="phase-icon" id="phase-icon"></div>
+        <h1 id="update-title">正在检查更新…</h1>
+        <div class="update-hint" id="update-hint"></div>
+        <div class="version-row" id="version-row">
+          <code id="ver-local"></code><span class="ver-arrow">→</span><code id="ver-remote"></code>
+        </div>
+        <ol id="steps">
+          <li data-status="pending" data-i18n="step.pull">拉取官方最新代码（git pull）</li>
+          <li data-status="pending" data-i18n="step.install">安装依赖（pnpm install）</li>
+          <li data-status="pending" data-i18n="step.build">重新构建（pnpm run build）</li>
+        </ol>
+        <details id="update-log-wrap">
+          <summary data-i18n="log.summary">详细日志</summary>
+          <pre id="update-log"></pre>
+        </details>
+        <pre id="update-error"></pre>
+        <div class="update-actions">
+          <button class="btn-ghost" id="btn-back-app" data-i18n="btn.back">返回应用</button>
+          <button class="btn-ghost" id="btn-recheck" data-i18n="btn.recheck">重新检查</button>
+          <button class="btn-primary" id="btn-force-rebuild" data-i18n="btn.force">强制重建</button>
+          <button class="btn-primary" id="btn-start-update" data-i18n="btn.start">开始更新</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 关闭确认（替代系统对话框，与整体风格一致） -->
+    <div class="modal-mask" id="close-mask">
+      <div class="modal">
+        <h2 id="close-title" data-i18n="close.title">关闭 DeepSeek Harness？</h2>
+        <div class="body" id="close-body" data-i18n="close.body">正在运行的会话与本地服务器将被终止。</div>
+        <div class="row">
+          <button class="btn-ghost" id="close-cancel" data-i18n="close.cancel">取消</button>
+          <button class="btn-primary" id="close-ok" data-i18n="close.ok">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 关于 -->
+    <div class="modal-mask" id="about-mask">
+      <div class="modal">
+        <h2>DeepSeek Harness</h2>
+        <div class="body" id="about-body">正在读取版本信息…</div>
+        <div class="body about-site"><span data-i18n="about.site">官网：</span><a href="https://www.deepseek.com/harness/" target="_blank" rel="noopener noreferrer">deepseek.com/harness</a></div>
+        <div class="body about-site"><span data-i18n="about.repo">官方仓库：</span><a href="https://github.com/deepseek-ai/deepseek-harness" target="_blank" rel="noopener noreferrer">github.com/deepseek-ai/deepseek-harness</a></div>
+        <div class="row">
+          <button class="btn-primary" id="about-ok" data-i18n="about.ok">确定</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script type="module">
+    const T = window.__TAURI__
+    const invoke = (...a) => T.core.invoke(...a)
+    const listen = (...a) => T.event.listen(...a)
+    const win = T.window.getCurrentWindow()
+
+    const $ = (id) => document.getElementById(id)
+    const frame = $('dsh-frame')
+    // 当前展示模式：loading → app；更新时切到 update，完成后回 app
+    let mode = 'loading'
+
+    // ---------- 国际化（跟随 dsh 的语言设置） ----------
+    const I18N = {
+      zh: {
+        'title.help': '帮助',
+        'menu.update': '检查并更新 Harness', 'menu.about': '关于 DeepSeek Harness',
+        'menu.repo': '打开仓库目录', 'menu.logs': '打开数据与日志目录',
+        'wc.min': '最小化', 'wc.max': '最大化', 'wc.close': '关闭',
+        'loading.title': '正在启动 DeepSeek Harness…',
+        'dead.title': '服务器已停止运行', 'dead.hint': 'dsh web 服务进程意外退出', 'dead.restart': '重启应用',
+        'step.pull': '拉取官方最新代码（git pull）', 'step.install': '安装依赖（pnpm install）', 'step.build': '重新构建（pnpm run build）',
+        'log.summary': '详细日志',
+        'btn.back': '返回应用', 'btn.recheck': '重新检查', 'btn.force': '强制重建', 'btn.start': '开始更新',
+        'close.title': '关闭 DeepSeek Harness？', 'close.body': '正在运行的会话与本地服务器将被终止。',
+        'close.cancel': '取消', 'close.ok': '关闭',
+        'close.updatingTitle': '更新正在进行中',
+        'close.updatingBody': '构建尚未完成，现在关闭会中断更新并可能损坏产物。\n请等待更新完成（完成后应用自动退出，重新打开即可）。',
+        'close.backUpdate': '返回更新页面',
+        'about.site': '官网：', 'about.repo': '官方仓库：', 'about.ok': '确定',
+        'about.loading': '正在读取版本信息…',
+        'about.body': '桌面壳版本：{shell}\nDeepSeek Harness（dsh）：{dsh}\n\n仓库目录：{repo}',
+        'about.fail': '版本信息读取失败：{err}',
+        'unknown': '未知',
+        'ph.checking.title': '正在检查更新…', 'ph.checking.hint': '对比本地与官方远端版本',
+        'ph.hasupdate.title': '发现新版本', 'ph.hasupdate.hint': '官方发布了新版本。更新将执行：拉取代码 → 安装依赖 → 重新构建；完成后应用自动退出，重新打开即可用新版本。',
+        'ph.latest.title': '已是最新版本', 'ph.latest.hint': '当前版本与官方远端一致。\n如上次构建曾被中断，可用「强制重建」重装并重建本地产物。',
+        'ph.running.title': '正在更新 DeepSeek Harness', 'ph.running.hint': '构建步骤可能需要几分钟，请勿关闭本窗口',
+        'ph.runningForce.title': '正在重建 DeepSeek Harness',
+        'ph.done.title': '更新完成', 'ph.done.hint': '应用即将退出。\n请重新打开 DeepSeek Harness 使用新版本。',
+        'ph.failed.title': '更新失败', 'ph.checkfail.title': '检查失败',
+        'fail.step': '步骤「{step}」失败，最近输出：\n{tail}\n\n服务器已恢复旧版运行。',
+      },
+      en: {
+        'title.help': 'Help',
+        'menu.update': 'Check & Update Harness', 'menu.about': 'About DeepSeek Harness',
+        'menu.repo': 'Open Repository Folder', 'menu.logs': 'Open Data & Logs Folder',
+        'wc.min': 'Minimize', 'wc.max': 'Maximize', 'wc.close': 'Close',
+        'loading.title': 'Starting DeepSeek Harness…',
+        'dead.title': 'Server Stopped', 'dead.hint': 'The dsh web server exited unexpectedly', 'dead.restart': 'Restart App',
+        'step.pull': 'Pull latest code (git pull)', 'step.install': 'Install dependencies (pnpm install)', 'step.build': 'Rebuild (pnpm run build)',
+        'log.summary': 'Details',
+        'btn.back': 'Back to App', 'btn.recheck': 'Re-check', 'btn.force': 'Force Rebuild', 'btn.start': 'Start Update',
+        'close.title': 'Close DeepSeek Harness?', 'close.body': 'Running sessions and the local server will be terminated.',
+        'close.cancel': 'Cancel', 'close.ok': 'Close',
+        'close.updatingTitle': 'Update in Progress',
+        'close.updatingBody': 'The build is still running. Closing now will interrupt the update and may corrupt artifacts.\nPlease wait for it to finish (the app will exit automatically; reopen it afterwards).',
+        'close.backUpdate': 'Back to Update',
+        'about.site': 'Website: ', 'about.repo': 'Repository: ', 'about.ok': 'OK',
+        'about.loading': 'Reading version info…',
+        'about.body': 'Shell version: {shell}\nDeepSeek Harness (dsh): {dsh}\n\nRepository: {repo}',
+        'about.fail': 'Failed to read version info: {err}',
+        'unknown': 'unknown',
+        'ph.checking.title': 'Checking for updates…', 'ph.checking.hint': 'Comparing local and remote versions',
+        'ph.hasupdate.title': 'New Version Available', 'ph.hasupdate.hint': 'A new version is available. Update will: pull code → install deps → rebuild. The app will exit when done — reopen it to use the new version.',
+        'ph.latest.title': 'Up to Date', 'ph.latest.hint': 'Current version matches the remote.\nIf a previous build was interrupted, use "Force Rebuild" to rebuild local artifacts.',
+        'ph.running.title': 'Updating DeepSeek Harness', 'ph.running.hint': 'Building may take a few minutes. Do not close this window.',
+        'ph.runningForce.title': 'Rebuilding DeepSeek Harness',
+        'ph.done.title': 'Update Complete', 'ph.done.hint': 'The app is about to exit.\nReopen DeepSeek Harness to use the new version.',
+        'ph.failed.title': 'Update Failed', 'ph.checkfail.title': 'Check Failed',
+        'fail.step': 'Step "{step}" failed. Recent output:\n{tail}\n\nThe server has been restored to the previous version.',
+      },
+    }
+    let LANG = 'zh'
+    const t = (key, vars = {}) => {
+      let s = (I18N[LANG] && I18N[LANG][key]) || I18N.zh[key] || key
+      for (const [k, v] of Object.entries(vars)) s = s.split(`{${k}}`).join(String(v))
+      return s
+    }
+    let lastPhase = null
+    let lastPhaseError = null
+    const applyLocale = (lang) => {
+      LANG = lang === 'en' ? 'en' : 'zh'
+      document.documentElement.lang = LANG === 'zh' ? 'zh-CN' : 'en'
+      document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n) })
+      document.querySelectorAll('[data-i18n-title]').forEach((el) => { el.title = t(el.dataset.i18nTitle) })
+      if (lastPhase) setPhase(lastPhase, lastPhaseError)
+    }
+
+    // ---------- 窗口控制 ----------
+    $('btn-min').addEventListener('click', () => win.minimize())
+    $('btn-max').addEventListener('click', () => win.toggleMaximize())
+    $('btn-close').addEventListener('click', () => win.close())
+
+    // ---------- 帮助菜单 ----------
+    const menu = $('help-menu')
+    const scrim = $('menu-scrim')
+    const menuItems = () => [...menu.querySelectorAll('.mi')]
+    // 展开时盖透明遮罩：点击内容区（含 iframe）任意处可关闭菜单
+    const setMenuOpen = (open) => {
+      menu.classList.toggle('open', open)
+      scrim.classList.toggle('open', open)
+      if (open) menuItems()[0].focus()
+    }
+    $('btn-help').addEventListener('click', (e) => {
+      e.stopPropagation()
+      setMenuOpen(!menu.classList.contains('open'))
+    })
+    const closeMenu = () => setMenuOpen(false)
+    document.addEventListener('click', closeMenu)
+    scrim.addEventListener('click', closeMenu)
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { closeMenu(); return }
+      // F1 / Alt+H 打开帮助菜单
+      if (e.key === 'F1' || (e.altKey && (e.key === 'h' || e.key === 'H'))) {
+        e.preventDefault()
+        setMenuOpen(true)
+        return
+      }
+      if (!menu.classList.contains('open')) return
+      // 菜单内方向键导航（Enter 触发走按钮默认行为）
+      const items = menuItems()
+      const idx = items.indexOf(document.activeElement)
+      if (e.key === 'ArrowDown') { e.preventDefault(); items[(idx + 1) % items.length].focus() }
+      else if (e.key === 'ArrowUp') { e.preventDefault(); items[(idx - 1 + items.length) % items.length].focus() }
+    })
+
+    $('mi-about').addEventListener('click', async () => {
+      closeMenu()
+      $('about-body').textContent = t('about.loading')
+      $('about-mask').classList.add('open')
+      try {
+        const info = await invoke('version_info')
+        $('about-body').textContent =
+          t('about.body', { shell: info.shell, dsh: info.dsh || t('unknown'), repo: info.repo || t('unknown') })
+      } catch (err) {
+        $('about-body').textContent = t('about.fail', { err })
+      }
+    })
+    $('about-ok').addEventListener('click', () => $('about-mask').classList.remove('open'))
+
+    $('mi-repo').addEventListener('click', () => { closeMenu(); invoke('open_repo_dir') })
+    $('mi-logs').addEventListener('click', () => { closeMenu(); invoke('open_logs_dir') })
+
+    // ---------- 服务器就绪 → iframe 加载 dsh ----------
+    const enterApp = () => {
+      mode = 'app'
+      $('loading-view').style.display = 'none'
+      $('update-view').style.display = 'none'
+      frame.style.display = 'block'
+    }
+    frame.addEventListener('load', () => {
+      invoke('shell_report', { msg: 'iframe 加载完成: ' + frame.src }).catch(() => {})
+      if (mode !== 'update') enterApp()
+    })
+
+    const loadApp = async ({ url }) => {
+      frame.src = url
+    }
+
+    // ---------- 更新流程 ----------
+    const titlebar = $('titlebar')
+    const phaseIcon = $('phase-icon')
+    let updateForceMode = false
+
+    const ICONS = { spin: '<div class="spin"></div>', up: '↑', ok: '✓', fail: '✗' }
+    const setIcon = (kind) => {
+      if (!kind) { phaseIcon.className = 'phase-icon'; phaseIcon.innerHTML = ''; return }
+      phaseIcon.className = 'phase-icon ' + (kind === 'spin' ? 'checking' : kind === 'up' ? 'up' : kind === 'ok' ? 'ok' : 'fail')
+      phaseIcon.innerHTML = ICONS[kind]
+    }
+
+    const setPhase = (phase, errorText) => {
+      lastPhase = phase
+      lastPhaseError = errorText || null
+      const P = {
+        checking:  { icon: 'spin', titleKey: 'ph.checking.title', hintKey: 'ph.checking.hint', steps: false, log: false, version: false, btns: ['back'] },
+        hasupdate: { icon: 'up', titleKey: 'ph.hasupdate.title', hintKey: 'ph.hasupdate.hint', steps: true, log: false, version: true, btns: ['back', 'start'] },
+        latest:    { icon: 'ok', titleKey: 'ph.latest.title', hintKey: 'ph.latest.hint', steps: false, log: false, version: false, btns: ['back', 'force'] },
+        running:   { icon: null, titleKey: 'ph.running.title', hintKey: 'ph.running.hint', steps: true, log: true, version: false, btns: [] },
+        done:      { icon: 'ok', titleKey: 'ph.done.title', hintKey: 'ph.done.hint', steps: true, log: true, version: false, btns: [] },
+        failed:    { icon: 'fail', titleKey: 'ph.failed.title', hintKey: '', steps: true, log: true, version: false, btns: ['back', 'force'] },
+        checkfail: { icon: 'fail', titleKey: 'ph.checkfail.title', hintKey: '', steps: false, log: false, version: false, btns: ['back', 'recheck'] },
+      }[phase]
+      setIcon(P.icon)
+      $('update-title').textContent = updateForceMode && phase === 'running' ? t('ph.runningForce.title') : t(P.titleKey)
+      const hint = errorText ? '' : t(P.hintKey)
+      $('update-hint').textContent = hint
+      $('update-hint').style.display = hint ? 'block' : 'none'
+      $('update-view').classList.toggle('show-steps', P.steps)
+      $('update-view').classList.toggle('show-log', P.log)
+      $('version-row').style.display = P.version ? 'flex' : 'none'
+      if (errorText) { $('update-error').textContent = errorText; $('update-error').style.display = 'block' }
+      else $('update-error').style.display = 'none'
+      const btnMap = { back: 'btn-back-app', recheck: 'btn-recheck', force: 'btn-force-rebuild', start: 'btn-start-update' }
+      for (const [k, id] of Object.entries(btnMap)) {
+        $(id).style.display = P.btns.includes(k) ? 'inline-block' : 'none'
+      }
+    }
+
+    const backToApp = () => {
+      mode = 'app'
+      titlebar.classList.remove('updating')
+      $('update-view').style.display = 'none'
+      frame.style.display = 'block'
+    }
+
+    const runCheck = async () => {
+      setPhase('checking')
+      try {
+        const r = await invoke('check_update')
+        if (r.has_update) {
+          $('ver-local').textContent = r.local
+          $('ver-remote').textContent = r.remote
+          setPhase('hasupdate')
+        } else {
+          setPhase('latest')
+        }
+      } catch (err) {
+        setPhase('checkfail', `${err}`)
+      }
+    }
+
+    // 点「检查并更新」：直接进入更新页并自动检查（只检查不执行，随时可返回）
+    const openUpdatePage = () => {
+      mode = 'update'
+      updateForceMode = false
+      titlebar.classList.remove('updating')
+      $('loading-view').style.display = 'none'
+      frame.style.display = 'none'
+      $('update-view').style.display = 'flex'
+      document.querySelectorAll('#steps li').forEach(li => li.dataset.status = 'pending')
+      $('update-log').textContent = ''
+      $('update-log-wrap').open = false
+      runCheck()
+    }
+
+    // 点「开始更新」/「强制重建」：真正执行更新流程
+    const startUpdate = async (force = false) => {
+      updateForceMode = force
+      titlebar.classList.add('updating')
+      setPhase('running')
+      try {
+        const result = await invoke('run_update', { force })
+        if (result.already_latest) {
+          // 极端情况：检查与执行之间远端状态变化
+          setPhase('latest')
+          titlebar.classList.remove('updating')
+          return
+        }
+        if (result.ok) {
+          // 成功：不恢复服务器、不重启——提示后杀服务器并直接退出，
+          // 用户重新打开应用即使用新版本
+          setPhase('done')
+          await new Promise(r => setTimeout(r, 1500))
+          await invoke('exit_app')
+        } else {
+          setPhase('failed', t('fail.step', { step: result.failed_step, tail: result.output_tail || '(无输出)' }))
+          titlebar.classList.remove('updating')
+        }
+      } catch (err) {
+        setPhase('checkfail', `${err}`)
+        titlebar.classList.remove('updating')
+      }
+    }
+
+    $('btn-back-app').addEventListener('click', backToApp)
+    $('btn-recheck').addEventListener('click', runCheck)
+    $('btn-force-rebuild').addEventListener('click', () => startUpdate(true))
+    $('btn-start-update').addEventListener('click', () => startUpdate(false))
+
+    $('mi-update').addEventListener('click', () => { closeMenu(); openUpdatePage() })
+
+    // ---------- iframe 外链转发 ----------
+    // 注入脚本拦截 dsh 页面（iframe，无 IPC 权限）里的外部链接点击后
+    // postMessage 过来，由本页面（有 IPC 权限）invoke 开系统浏览器
+    window.addEventListener('message', (e) => {
+      const url = e.data && e.data.__dshShellOpenExternal
+      if (typeof url === 'string' && /^https?:\/\//.test(url)) {
+        invoke('open_external', { url }).catch(console.error)
+      }
+    })
+
+    // ---------- 关闭确认（自定义模态，替代系统对话框） ----------
+    $('close-cancel').addEventListener('click', () => $('close-mask').classList.remove('open'))
+    $('close-ok').addEventListener('click', () => invoke('confirm_close'))
+
+    // ---------- 服务器断线 ----------
+    $('btn-restart').addEventListener('click', () => invoke('restart_app'))
+
+    // ---------- 事件绑定 ----------
+    const bootstrap = async () => {
+      // 语言初始化（后端读 settings.yaml 的 locale.preference）+ 变化监听
+      try { applyLocale(await invoke('get_locale')) } catch { /* 命令不可用：保持默认中文 */ }
+      await listen('locale-changed', (e) => applyLocale(e.payload))
+      // webview 刷新后 server-ready 事件已错过：主动查询恢复
+      try {
+        const st = await invoke('shell_state')
+        if (st.url && mode === 'loading') loadApp({ url: st.url })
+      } catch { /* 命令不可用则等待事件 */ }
+      await listen('server-ready', (e) => loadApp(e.payload))
+      await listen('server-restored', (e) => {
+        // 更新失败后服务器恢复：重新加载 iframe（load 事件里回到 app 模式）
+        frame.src = e.payload.url
+      })
+      await listen('server-dead', () => {
+        // 服务器进程意外退出（正常关闭/更新杀服务器时进程已被 take，不会触发）
+        if (mode === 'update') return
+        mode = 'dead'
+        $('server-dead-view').classList.add('show')
+        frame.style.display = 'none'
+      })
+      await listen('close-requested', (e) => {
+        // Rust 侧拦截了关闭请求：正常 → 关闭确认；更新中 → 只提示不关闭
+        const updating = !!(e.payload && e.payload.updating)
+        if (updating) {
+          $('close-title').textContent = t('close.updatingTitle')
+          $('close-body').textContent = t('close.updatingBody')
+          $('close-ok').style.display = 'none'
+          $('close-cancel').textContent = t('close.backUpdate')
+        } else {
+          $('close-title').textContent = t('close.title')
+          $('close-body').textContent = t('close.body')
+          $('close-ok').style.display = ''
+          $('close-cancel').textContent = t('close.cancel')
+        }
+        $('close-mask').classList.add('open')
+      })
+      await listen('update-step', (e) => {
+        const li = document.querySelectorAll('#steps li')[e.payload.index]
+        if (li) li.dataset.status = e.payload.status
+      })
+      await listen('update-log', (e) => {
+        const el = $('update-log')
+        el.textContent += e.payload.text
+        if (el.textContent.length > 6000) el.textContent = el.textContent.slice(-6000)
+        el.scrollTop = el.scrollHeight
+      })
+    }
+    bootstrap()
+  </script>
+</body>
+</html>
