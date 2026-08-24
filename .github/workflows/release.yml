@@ -1,0 +1,27 @@
+name: Release
+
+# 触发条件：push 以 v 开头的标签（如 v1.1.2）时自动构建发布
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: # 也可以在 Actions 页面手动点击触发
+
+jobs:
+  build:
+    runs-on: windows-latest # Windows 云电脑（NSIS 安装包只能在 Windows 上打包）
+    steps:
+      - uses: actions/checkout@v4 # 拉取仓库源码
+      - uses: actions/setup-node@v4 # 安装 Node.js
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable # 安装 Rust 工具链
+      - uses: swatinem/rust-cache@v2 # 依赖缓存，加速后续构建
+      - uses: tauri-apps/tauri-action@v0 # 核心步骤：编译 + 打包 + 发布 Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # GitHub 自动注入的令牌（自动脱敏，不会出现在日志）
+        with:
+          tagName: v__VERSION__ # 标签名自动使用 Cargo.toml 的版本号
+          releaseName: "v__VERSION__"
+          releaseBody: "自动构建发布"
+          releaseDraft: false
+          prerelease: false
