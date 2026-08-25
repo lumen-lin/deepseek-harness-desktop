@@ -12,6 +12,9 @@
 # 构建生成
 /src-tauri/gen
 
+# 本地隐私配置（含本机路径，严禁提交）
+/src-tauri/.cargo/
+
 # 构建/包管理缓存
 /.bundle-cache
 /pnpm-cache
