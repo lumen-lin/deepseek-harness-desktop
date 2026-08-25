@@ -206,14 +206,18 @@ pub(crate) fn restart_app(app: AppHandle) {
     app.restart();
 }
 
-/// Tauri 命令：前端自定义关闭模态的「关闭」按钮 —— 确认后销毁主窗口
-/// （Destroyed 事件里会杀服务器进程树）。SKIP 标志防止再次触发确认。
+/// Tauri 命令：前端自定义关闭模态的「退出」按钮 —— 确认后结束整个应用。
+/// 主窗口销毁后若仅剩系统托盘，Tauri 不会自动退出进程，必须显式 exit，
+/// 否则点「退出」只是关了窗口、程序仍在后台运行（托盘残留）。
+/// SKIP 标志防止再次触发关闭确认。
 #[tauri::command]
 pub(crate) fn confirm_close(app: AppHandle) {
     SKIP_CLOSE_CONFIRM.store(true, Ordering::SeqCst);
+    kill_server(&app);
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.destroy();
     }
+    app.exit(0);
 }
 
 /// 托盘菜单「退出」：用户已通过菜单明确表达退出意图，不再二次弹窗

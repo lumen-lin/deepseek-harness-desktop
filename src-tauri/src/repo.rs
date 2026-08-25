@@ -20,7 +20,32 @@ pub(crate) fn data_dir() -> PathBuf {
 }
 
 fn read_repo_config() -> Option<String> {
-    let text = fs::read_to_string(data_dir().join("config.json")).ok()?;
+    let parent = log_dir()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_default();
+    let new_path = parent.join("data").join("config.json");
+    let legacy_path = parent.join("config.json");
+
+    // 新位置优先（exe 旁 data\config.json）
+    if let Some(s) = parse_repo_root(&new_path) {
+        return Some(s);
+    }
+    // 兼容旧版：早期版本把 config.json 直接写在 exe 旁（无 data 子目录）。
+    // 命中即把旧配置迁移到新位置，避免长期保留两套兼容分支。
+    if let Some(s) = parse_repo_root(&legacy_path) {
+        if !new_path.exists() {
+            let _ = fs::create_dir_all(parent.join("data"));
+            let _ = fs::copy(&legacy_path, &new_path);
+        }
+        return Some(s);
+    }
+    None
+}
+
+/// 从单个 config.json 解析 repoRoot（文件缺失/格式错误返回 None）。
+fn parse_repo_root(path: &Path) -> Option<String> {
+    let text = fs::read_to_string(path).ok()?;
     let parsed: serde_json::Value = serde_json::from_str(&text).ok()?;
     parsed.get("repoRoot")?.as_str().map(String::from)
 }
