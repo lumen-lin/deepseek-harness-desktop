@@ -36,16 +36,16 @@ fn open_in_explorer(path: &str) -> Result<(), String> {
 
 /// Tauri 命令：打开 deepseek-harness 仓库目录（帮助菜单）。
 #[tauri::command]
-pub(crate) fn open_repo_dir(app: AppHandle) -> Result<(), String> {
+pub(crate) fn open_repo_dir() -> Result<(), String> {
     let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
-    log(&app, "打开仓库目录");
+    log("打开仓库目录");
     open_in_explorer(&repo.to_string_lossy())
 }
 
 /// Tauri 命令：打开数据与日志目录（帮助菜单）。
 #[tauri::command]
-pub(crate) fn open_logs_dir(app: AppHandle) -> Result<(), String> {
-    log(&app, "打开日志目录");
+pub(crate) fn open_logs_dir() -> Result<(), String> {
+    log("打开日志目录");
     open_in_explorer(&log_dir().to_string_lossy())
 }
 
@@ -59,7 +59,7 @@ pub(crate) fn read_log() -> Result<String, String> {
     let len = file.metadata().map_err(|e| e.to_string())?.len();
     let skip = len.saturating_sub(MAX_BYTES);
     file.seek(SeekFrom::Start(skip)).map_err(|e| e.to_string())?;
-    let mut buf = Vec::with_capacity((len - skip).min(8 << 20) as usize);
+    let mut buf = Vec::with_capacity((len - skip) as usize);
     file.read_to_end(&mut buf).map_err(|e| e.to_string())?;
     let mut text = String::from_utf8_lossy(&buf).into_owned();
     if skip > 0 {
@@ -131,8 +131,8 @@ pub(crate) fn version_info() -> VersionInfo {
 
 /// Tauri 命令：壳页面诊断上报（iframe 加载完成等关键节点写入日志，便于验证）。
 #[tauri::command]
-pub(crate) fn shell_report(app: AppHandle, msg: String) {
-    log(&app, &format!("[壳页面] {msg}"));
+pub(crate) fn shell_report(msg: String) {
+    log(&format!("[壳页面] {msg}"));
 }
 
 #[derive(Serialize)]
@@ -173,7 +173,7 @@ pub(crate) const FRAME_GUARD_JS: &str = r#"
         if (!a) return;
         var href = a.href || '';
         if (!/^https?:\/\//.test(href)) return;
-        if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?\//.test(href)) return;
+        if (/^https?:\/\/(127\.0\.0\.1|localhost|\[::1\]|dsh\.internal)(:\d+)?\//.test(href)) return;
         e.preventDefault();
         e.stopPropagation();
         if (window.parent && window.parent !== window) {
@@ -189,11 +189,11 @@ pub(crate) const FRAME_GUARD_JS: &str = r#"
 /// Tauri 命令：用系统默认浏览器打开外部 URL（仅 http/https）。
 /// 由注入脚本（主 frame）或壳页面（转发 iframe 的 postMessage）调用。
 #[tauri::command]
-pub(crate) fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+pub(crate) fn open_external(url: String) -> Result<(), String> {
     if !url.starts_with("http://") && !url.starts_with("https://") {
         return Err("仅支持 http/https 链接".into());
     }
-    log(&app, &format!("外部链接转浏览器: {url}"));
+    log(&format!("外部链接转浏览器: {url}"));
     tauri_plugin_opener::open_url(&url, None::<String>).map_err(|e| e.to_string())
 }
 

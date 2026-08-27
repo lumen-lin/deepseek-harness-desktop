@@ -7,28 +7,10 @@ use std::time::Duration;
 use tauri::{window::Color, AppHandle, Manager};
 
 use crate::logging::log;
+use crate::paths;
 
-fn dsh_home() -> PathBuf {
-    if let Ok(env) = std::env::var("DSH_HOME") {
-        let trimmed = env.trim().to_string();
-        if !trimmed.is_empty() {
-            let p = if trimmed == "~" {
-                dirs_home()
-            } else if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
-                dirs_home().join(rest)
-            } else {
-                PathBuf::from(trimmed)
-            };
-            return p;
-        }
-    }
-    dirs_home().join(".dsh")
-}
-
-fn dirs_home() -> PathBuf {
-    std::env::var("USERPROFILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+fn settings_path() -> PathBuf {
+    paths::dsh_home().join("settings.yaml")
 }
 
 /// 读 ui-theme.preference（light/dark/system），失败回 system（跟随系统）。
@@ -36,7 +18,7 @@ fn dirs_home() -> PathBuf {
 /// 出现同样字样会误判）；dsh 未来若改字段名，此处拿不到值也只是主题跟随
 /// 失效、回退跟随系统，不影响壳的其他功能。
 fn read_theme_preference() -> String {
-    let Ok(text) = fs::read_to_string(dsh_home().join("settings.yaml")) else {
+    let Ok(text) = fs::read_to_string(settings_path()) else {
         return "system".into();
     };
     let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
@@ -56,7 +38,7 @@ fn read_theme_preference() -> String {
 /// 读取 dsh 偏好并应用为窗口初始主题（开窗前调用，避免首帧闪色）。
 pub(crate) fn apply_theme_preference(app: &AppHandle) {
     let pref = read_theme_preference();
-    log(app, &format!("dsh 主题偏好: {pref}"));
+    log(&format!("dsh 主题偏好: {pref}"));
     let dark = match pref.as_str() {
         "dark" => Some(true),
         "light" => Some(false),
@@ -114,11 +96,11 @@ pub(crate) fn native_theme_prefers_dark() -> bool {
 pub(crate) fn spawn_theme_watcher(handle: AppHandle) {
     std::thread::spawn(move || {
         use notify::Watcher;
-        let settings = dsh_home().join("settings.yaml");
+        let settings = settings_path();
         let mut last = read_theme_preference();
         let (tx, rx) = std::sync::mpsc::channel::<Result<notify::Event, notify::Error>>();
         let watcher = notify::recommended_watcher(tx).and_then(|mut w| {
-            let dir = dsh_home();
+            let dir = paths::dsh_home();
             let _ = std::fs::create_dir_all(&dir);
             w.watch(&dir, notify::RecursiveMode::NonRecursive)?;
             Ok(w)
@@ -126,7 +108,7 @@ pub(crate) fn spawn_theme_watcher(handle: AppHandle) {
         match watcher {
             Ok(w) => {
                 let _watcher = w; // 保持监听器存活
-                log(&handle, "主题监听已建立（目录监听 + 30s 兜底）");
+                log("主题监听已建立（目录监听 + 30s 兜底）");
                 loop {
                     let hit = match rx.recv_timeout(Duration::from_secs(30)) {
                         Ok(Ok(ev)) => ev.paths.iter().any(|p| p == &settings),
@@ -137,7 +119,7 @@ pub(crate) fn spawn_theme_watcher(handle: AppHandle) {
                         std::thread::sleep(Duration::from_millis(50));
                         let now = read_theme_preference();
                         if now != last {
-                            log(&handle, &format!("主题偏好变化（文件）: {now}"));
+                            log(&format!("主题偏好变化（文件）: {now}"));
                             last = now;
                             apply_theme_preference(&handle);
                         }
@@ -145,12 +127,12 @@ pub(crate) fn spawn_theme_watcher(handle: AppHandle) {
                 }
             }
             Err(e) => {
-                log(&handle, &format!("主题监听不可用（{e}），回退 500ms 轮询"));
+                log(&format!("主题监听不可用（{e}），回退 500ms 轮询"));
                 loop {
                     std::thread::sleep(Duration::from_millis(500));
                     let now = read_theme_preference();
                     if now != last {
-                        log(&handle, &format!("主题偏好变化（文件）: {now}"));
+                        log(&format!("主题偏好变化（文件）: {now}"));
                         last = now;
                         apply_theme_preference(&handle);
                     }

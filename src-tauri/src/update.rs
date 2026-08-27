@@ -61,14 +61,19 @@ fn git_output(repo: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
-/// fetch 远端并对比本地 HEAD 与 upstream；一致则说明已是最新，无需更新。
-fn check_latest(app: &AppHandle, repo: &Path) -> Result<bool, String> {
-    log(app, "检查更新：git fetch origin");
+/// fetch 远端并返回 (本地 HEAD, 远端 upstream, 是否一致)。
+fn fetch_and_compare(repo: &Path) -> Result<(String, String, bool), String> {
+    log("检查更新：git fetch origin");
     git_output(repo, &["fetch", "origin"])?;
     let local = git_output(repo, &["rev-parse", "HEAD"])?;
     let remote = git_output(repo, &["rev-parse", "@{u}"])?;
-    log(app, &format!("版本对比 本地 {} vs 远端 {}", &local[..7.min(local.len())], &remote[..7.min(remote.len())]));
-    Ok(local == remote)
+    log(&format!(
+        "版本对比 本地 {} vs 远端 {}",
+        &local[..7.min(local.len())],
+        &remote[..7.min(remote.len())]
+    ));
+    let latest = local == remote;
+    Ok((local, remote, latest))
 }
 
 #[derive(Serialize)]
@@ -84,13 +89,9 @@ pub(crate) struct CheckResultPayload {
 /// Tauri 命令：只检查不执行——fetch 并对比版本，返回结果由前端决定是否更新。
 /// 不触碰服务器，用户"只想看看有没有新版本"的场景随时可安全返回。
 #[tauri::command]
-pub(crate) async fn check_update(app: AppHandle) -> Result<CheckResultPayload, String> {
+pub(crate) async fn check_update() -> Result<CheckResultPayload, String> {
     let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
-    log(&app, "检查更新：git fetch origin");
-    git_output(&repo, &["fetch", "origin"])?;
-    let local = git_output(&repo, &["rev-parse", "HEAD"])?;
-    let remote = git_output(&repo, &["rev-parse", "@{u}"])?;
-    log(&app, &format!("版本对比 本地 {} vs 远端 {}", &local[..7.min(local.len())], &remote[..7.min(remote.len())]));
+    let (local, remote, _latest) = fetch_and_compare(&repo)?;
     Ok(CheckResultPayload {
         has_update: local != remote,
         local: local[..7.min(local.len())].to_string(),
@@ -159,7 +160,7 @@ fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<(String, Vec<String>)> {
 
 /// 执行一步更新命令，输出逐行推给前端；返回 (是否成功, 输出尾部)。
 fn run_update_step(app: &AppHandle, repo: &Path, index: usize, label: &str, program: &str, args: &[String]) -> (bool, String) {
-    log(app, &format!("更新步骤[{label}] 开始"));
+    log(&format!("更新步骤[{label}] 开始"));
     let _ = app.emit("update-step", UpdateStepEvent { index, status: "running".into() });
 
     let mut cmd = Command::new(program);
@@ -191,7 +192,7 @@ fn run_update_step(app: &AppHandle, repo: &Path, index: usize, label: &str, prog
     while let Ok(line) = rx.recv() {
         output.push_str(&line);
         output.push('\n');
-        log(app, &line);
+        log(&line);
         let _ = app.emit("update-log", UpdateLogEvent { text: &format!("{line}\n") });
         if output.len() > 6000 {
             // 必须按字符边界截断：字节切片落在多字节字符中间会 panic，
@@ -206,7 +207,7 @@ fn run_update_step(app: &AppHandle, repo: &Path, index: usize, label: &str, prog
     let status = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
     let ok = status == 0;
     let _ = app.emit("update-step", UpdateStepEvent { index, status: if ok { "done".into() } else { "failed".into() } });
-    log(app, &format!("更新步骤[{label}] {}", if ok { "完成" } else { "失败" }));
+    log(&format!("更新步骤[{label}] {}", if ok { "完成" } else { "失败" }));
     (ok, output)
 }
 
@@ -226,15 +227,27 @@ impl Drop for UpdateGuard {
     }
 }
 
+/// 取字符串末尾最多 n 个字符（按字符边界，不会切断多字节字符）。
+fn tail_chars(s: &str, n: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= n {
+        s.to_string()
+    } else {
+        chars[chars.len() - n..].iter().collect()
+    }
+}
+
 /// 更新失败后恢复服务器（回退旧版，固定端口优先，占用则回退随机端口）。
 /// 成功路径不调用：成功后壳页面保留更新结果，由用户手动点击「重启服务」。
 fn restore_server(app: &AppHandle, repo: &Path) {
+    // 防御性：确保旧进程已清理（正常流程上游已杀，此处兜底）
+    kill_server(app);
     match start_server(app, repo, DSH_PORT).or_else(|_| start_server(app, repo, 0)) {
         Ok(url) => {
             let _ = app.emit("server-restored", serde_json::json!({ "url": url }));
         }
         Err(e) => {
-            log(app, &format!("服务器恢复失败: {e}"));
+            log(&format!("服务器恢复失败: {e}"));
         }
     }
 }
@@ -248,15 +261,16 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
     let force = force.unwrap_or(false);
 
     // 先 fetch 对比：已是最新且非强制重建则直接返回，服务器原样在跑，应用不受影响
-    if check_latest(&app, &repo)? && !force {
-        log(&app, "已是最新版本，跳过更新流程");
+    let (_local, _remote, latest) = fetch_and_compare(&repo)?;
+    if latest && !force {
+        log("已是最新版本，跳过更新流程");
         return Ok(UpdateResultPayload {
             ok: true, failed_step: None, output_tail: None, already_latest: true,
             prev_head: None, stashed_changes: false,
         });
     }
     if force {
-        log(&app, "强制重建：跳过版本检查，直接执行构建流程");
+        log("强制重建：跳过版本检查，直接执行构建流程");
     }
 
     // 先探测 pnpm 调用方式（.cmd 垫片 / .exe / corepack）再杀服务器：
@@ -265,7 +279,7 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
     let pnpm = locate_pnpm().ok_or(
         "找不到 pnpm 或 corepack：请安装 Node.js（自带 corepack），或在终端运行 npm install -g pnpm",
     )?;
-    log(&app, &format!("pnpm 调用方式: {} {}", pnpm.0, pnpm.1.join(" ")));
+    log(&format!("pnpm 调用方式: {} {}", pnpm.0, pnpm.1.join(" ")));
     let commands = update_commands(&pnpm);
 
     // 更新前基线提交：pull 成功但后续步骤失败时，供「回滚到更新前」使用
@@ -289,13 +303,13 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
         // git pull 被本地未提交改动阻止：自动 stash（含未跟踪文件）后重试一次。
         // 不自动 pop——恢复时机由用户决定，避免与新代码冲突
         if step == 0 && !stashed_changes && looks_like_local_change_conflict(&output) {
-            log(&app, "检测到本地未提交改动阻止 git pull，自动执行 git stash 暂存");
+            log("检测到本地未提交改动阻止 git pull，自动执行 git stash 暂存");
             match git_output(&repo, &["stash", "push", "--include-untracked", "-m", "dsh-shell auto-stash"]) {
                 Ok(_) => {
                     stashed_changes = true;
                     continue;
                 }
-                Err(e) => log(&app, &format!("git stash 失败: {e}")),
+                Err(e) => log(&format!("git stash 失败: {e}")),
             }
         }
         failure = Some((step, output));
@@ -306,7 +320,7 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
         None => {
             // 成功：不恢复服务器、不退出应用——壳页面保留更新结果，
             // 前端显示「重启服务」按钮，用户手动调用 restart_server 以新版启动
-            log(&app, "更新完成（等待用户手动重启服务）");
+            log("更新完成（等待用户手动重启服务）");
             Ok(UpdateResultPayload {
                 ok: true, failed_step: None, output_tail: None, already_latest: false,
                 prev_head: None, stashed_changes,
@@ -323,7 +337,7 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
             Ok(UpdateResultPayload {
                 ok: false,
                 failed_step: Some(UPDATE_STEP_LABELS[step_index].to_string()),
-                output_tail: Some(output.chars().rev().take(1500).collect::<String>().chars().rev().collect()),
+                output_tail: Some(tail_chars(&output, 1500)),
                 already_latest: false,
                 prev_head: rollback_base,
                 stashed_changes,
@@ -342,11 +356,11 @@ pub(crate) async fn rollback_update(app: AppHandle, commit: String) -> Result<()
         return Err(format!("非法的提交哈希: {commit}"));
     }
     let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
-    log(&app, &format!("回滚到更新前提交 {}", &commit[..8.min(commit.len())]));
+    log(&format!("回滚到更新前提交 {}", &commit[..8.min(commit.len())]));
     kill_server(&app);
     git_output(&repo, &["reset", "--hard", &commit]).map_err(|e| format!("git reset 失败: {e}"))?;
     restore_server(&app, &repo);
-    log(&app, "已回滚到旧版源码，服务器以旧版本重新启动");
+    log("已回滚到旧版源码，服务器以旧版本重新启动");
     Ok(())
 }
 
@@ -357,18 +371,20 @@ pub(crate) async fn rollback_update(app: AppHandle, commit: String) -> Result<()
 #[tauri::command]
 pub(crate) async fn restart_server(app: AppHandle) -> Result<String, String> {
     let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
-    log(&app, "手动重启 dsh web 服务器");
+    log("手动重启 dsh web 服务器");
+    // 先清理可能残留的旧服务器进程，避免双开
+    kill_server(&app);
     match start_server(&app, &repo, DSH_PORT).or_else(|_| start_server(&app, &repo, 0)) {
         Ok(url) => {
             if let Some(state) = app.try_state::<ServerUrl>() {
                 *state.0.lock().unwrap() = Some(url.clone());
             }
             let _ = app.emit("server-restored", serde_json::json!({ "url": url }));
-            log(&app, &format!("服务器已重启: {url}"));
+            log(&format!("服务器已重启: {url}"));
             Ok(url)
         }
         Err(e) => {
-            log(&app, &format!("服务器重启失败: {e}"));
+            log(&format!("服务器重启失败: {e}"));
             Err(e)
         }
     }

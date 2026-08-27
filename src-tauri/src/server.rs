@@ -1,5 +1,6 @@
 //! dsh web 服务器子进程：启动、就绪解析、结束、孤儿清理、存活监控。
 
+use std::collections::VecDeque;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -74,7 +75,7 @@ pub(crate) fn start_server(app: &AppHandle, repo: &Path, port: u16) -> Result<St
     let (program, args) = server_command(repo, port)
         .ok_or_else(|| format!("在 {} 找不到 apps/cli 入口（lib/bin.js 或 src/bin.ts），请先在仓库执行 pnpm install 并构建", repo.display()))?;
 
-    log(app, &format!("启动服务器: {program} {}", args.iter().map(|a| {
+    log(&format!("启动服务器: {program} {}", args.iter().map(|a| {
         if a.contains(' ') { format!("\"{a}\"") } else { a.clone() }
     }).collect::<Vec<_>>().join(" ")));
 
@@ -93,6 +94,14 @@ pub(crate) fn start_server(app: &AppHandle, repo: &Path, port: u16) -> Result<St
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
 
+    // 立即登记句柄与 pid 文件：启动等待期间（最长 60s）若用户退出，
+    // kill_server 能找到并终止子进程，避免孤儿进程泄漏
+    if let Some(state) = app.try_state::<ServerProc>() {
+        *state.0.lock().unwrap() = Some(child);
+    }
+    let _ = fs::write(pid_file(), pid.to_string());
+
+    // 取出句柄引用来逐行读输出（child 已存入 ServerProc，此处重新借用）
     // 起线程逐行读输出找就绪行（stdout 与 stderr 都可能打出）
     let (tx, rx) = std::sync::mpsc::channel::<String>();
     let mut streams: Vec<Box<dyn std::io::Read + Send>> = Vec::new();
@@ -111,15 +120,15 @@ pub(crate) fn start_server(app: &AppHandle, repo: &Path, port: u16) -> Result<St
     }
     drop(tx);
 
-    let mut log_tail: Vec<String> = Vec::new();
+    let mut log_tail: VecDeque<String> = VecDeque::with_capacity(401);
     let url = loop {
         let recv = rx.recv_timeout(Duration::from_secs(START_TIMEOUT_SECS));
         match recv {
             Ok(line) => {
-                log(app, &line);
-                log_tail.push(line.clone());
+                log(&line);
+                log_tail.push_back(line.clone());
                 if log_tail.len() > 400 {
-                    log_tail.remove(0);
+                    log_tail.pop_front();
                 }
                 if let Some(pos) = line.find(URL_LINE) {
                     let rest = &line[pos + URL_LINE.len()..];
@@ -129,18 +138,20 @@ pub(crate) fn start_server(app: &AppHandle, repo: &Path, port: u16) -> Result<St
                 }
             }
             Err(_) => {
-                let _ = child.kill();
-                return Err(format!("服务器 {START_TIMEOUT_SECS} 秒内未就绪。最近日志：\n{}", log_tail.join("\n")));
+                // 超时：从 ServerProc 取回句柄并杀进程，清除 pid 文件
+                if let Some(state) = app.try_state::<ServerProc>() {
+                    if let Some(mut child) = state.0.lock().unwrap().take() {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                    }
+                }
+                let _ = fs::remove_file(pid_file());
+                return Err(format!("服务器 {START_TIMEOUT_SECS} 秒内未就绪。最近日志：\n{}", log_tail.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")));
             }
         }
     };
 
-    if let Some(state) = app.try_state::<ServerProc>() {
-        *state.0.lock().unwrap() = Some(child);
-    }
-    // 记录 pid：壳崩溃/被强杀时进程残留，下次启动经 cleanup_stale_server 清理
-    let _ = fs::write(pid_file(), pid.to_string());
-    log(app, &format!("服务器就绪: {url} (pid={pid})"));
+    log(&format!("服务器就绪: {url} (pid={pid})"));
     Ok(url)
 }
 
@@ -150,12 +161,15 @@ pub(crate) fn kill_server(app: &AppHandle) {
         let mut guard = state.0.lock().unwrap();
         if let Some(mut child) = guard.take() {
             let pid = child.id();
-            log(app, &format!("结束服务器进程 pid={pid}"));
+            log(&format!("结束服务器进程 pid={pid}"));
             #[cfg(windows)]
             {
                 let mut cmd = Command::new("taskkill");
                 cmd.args(["/pid", &pid.to_string(), "/T", "/F"]);
-                let _ = creation_flags_windows(&mut cmd).spawn();
+                // 等待 taskkill 完成，避免产生孤儿 taskkill 进程
+                let _ = creation_flags_windows(&mut cmd)
+                    .spawn()
+                    .and_then(|mut c| c.wait());
             }
             #[cfg(not(windows))]
             {
@@ -171,7 +185,7 @@ pub(crate) fn kill_server(app: &AppHandle) {
 
 /// 启动时清理上次异常退出（崩溃/被强杀）遗留的服务器进程。
 /// 校验进程名必须是 node.exe 才动手，防 PID 复用误杀无关进程。
-pub(crate) fn cleanup_stale_server(app: &AppHandle) {
+pub(crate) fn cleanup_stale_server() {
     let path = pid_file();
     let Ok(text) = fs::read_to_string(&path) else { return };
     let Ok(pid) = text.trim().parse::<u32>() else {
@@ -189,7 +203,7 @@ pub(crate) fn cleanup_stale_server(app: &AppHandle) {
                 .lines()
                 .any(|l| l.contains("node.exe") && l.contains(&pid_str));
             if alive_node {
-                log(app, &format!("清理上次异常退出遗留的 dsh 服务器进程 pid={pid}"));
+                log(&format!("清理上次异常退出遗留的 dsh 服务器进程 pid={pid}"));
                 let mut k = Command::new("taskkill");
                 k.args(["/pid", &pid_str, "/T", "/F"]);
                 let _ = creation_flags_windows(&mut k)
@@ -204,6 +218,7 @@ pub(crate) fn cleanup_stale_server(app: &AppHandle) {
 /// 存活监控：每 2 秒 try_wait 一次。服务器意外退出（不是 kill_server 正常结束）
 /// 时 emit server-dead，壳页面据此显示断线页。kill_server 会 take 走子进程
 /// （状态为 None），因此正常关闭/更新杀服务器不会误报。
+/// 服务器被重启（restore_server / restart_server）后句柄重新存入，监控自动恢复。
 pub(crate) fn spawn_health_watcher(handle: AppHandle) {
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(2));
@@ -222,7 +237,7 @@ pub(crate) fn spawn_health_watcher(handle: AppHandle) {
             if let Some(state) = handle.try_state::<ServerProc>() {
                 let _ = state.0.lock().unwrap().take();
             }
-            log(&handle, "服务器进程意外退出");
+            log("服务器进程意外退出");
             let _ = handle.emit("server-dead", ());
         }
     });

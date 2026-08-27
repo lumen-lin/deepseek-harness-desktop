@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::logging::log_dir;
+use crate::paths;
 
 /// 校验目录是否为 deepseek-harness 仓库根（apps\cli\package.json 存在）。
 pub(crate) fn is_repo_root(p: &Path) -> bool {
@@ -12,20 +12,13 @@ pub(crate) fn is_repo_root(p: &Path) -> bool {
 
 /// 数据目录：配置（仓库位置）、pid 文件等。开发模式在 desktop-tauri\data，打包后在 exe 旁 data。
 pub(crate) fn data_dir() -> PathBuf {
-    log_dir()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default()
-        .join("data")
+    paths::app_base_dir().join("data")
 }
 
 fn read_repo_config() -> Option<String> {
-    let parent = log_dir()
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_default();
-    let new_path = parent.join("data").join("config.json");
-    let legacy_path = parent.join("config.json");
+    let base = paths::app_base_dir();
+    let new_path = base.join("data").join("config.json");
+    let legacy_path = base.join("config.json");
 
     // 新位置优先（exe 旁 data\config.json）
     if let Some(s) = parse_repo_root(&new_path) {
@@ -35,7 +28,7 @@ fn read_repo_config() -> Option<String> {
     // 命中即把旧配置迁移到新位置，避免长期保留两套兼容分支。
     if let Some(s) = parse_repo_root(&legacy_path) {
         if !new_path.exists() {
-            let _ = fs::create_dir_all(parent.join("data"));
+            let _ = fs::create_dir_all(base.join("data"));
             let _ = fs::copy(&legacy_path, &new_path);
         }
         return Some(s);

@@ -721,6 +721,8 @@
     // 注入脚本拦截 dsh 页面（iframe，无 IPC 权限）里的外部链接点击后
     // postMessage 过来，由本页面（有 IPC 权限）invoke 开系统浏览器
     window.addEventListener('message', (e) => {
+      // 只接受来自本地 dsh 服务器（127.0.0.1/localhost 任意端口）的消息
+      if (!/^http:\/\/(127\.0\.0\.1|localhost):\d+$/.test(e.origin)) return
       const url = e.data && e.data.__dshShellOpenExternal
       if (typeof url === 'string' && /^https?:\/\//.test(url)) {
         invoke('open_external', { url }).catch(console.error)
@@ -744,11 +746,8 @@
       // 语言初始化（后端读 settings.yaml 的 locale.preference）+ 变化监听
       try { applyLocale(await invoke('get_locale')) } catch { /* 命令不可用：保持默认中文 */ }
       await listen('locale-changed', (e) => applyLocale(e.payload))
-      // webview 刷新后 server-ready 事件已错过：主动查询恢复
-      try {
-        const st = await invoke('shell_state')
-        if (st.url && mode === 'loading') loadApp({ url: st.url })
-      } catch { /* 命令不可用则等待事件 */ }
+      // 先注册所有事件监听，再查询当前状态——避免 server-ready 在
+      // invoke 返回与 listen 注册之间触发而丢失（会导致永久卡在加载页）
       await listen('server-ready', (e) => loadApp(e.payload))
       await listen('server-restored', (e) => {
         // 更新失败自动恢复 / 手动重启服务就绪：重新加载 iframe（load 事件里回到 app 模式）
@@ -803,6 +802,11 @@
         while (updLogEl.childElementCount > 600) updLogEl.removeChild(updLogEl.firstChild)
         if (updateLogFollow) updLogEl.scrollTop = updLogEl.scrollHeight
       })
+      // 监听全部就绪后再查询当前状态（webview 刷新后恢复 iframe）
+      try {
+        const st = await invoke('shell_state')
+        if (st.url && mode === 'loading') loadApp({ url: st.url })
+      } catch { /* 命令不可用则等待事件 */ }
     }
     bootstrap()
   </script>

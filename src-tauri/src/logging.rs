@@ -3,26 +3,13 @@
 use std::fs;
 use std::path::PathBuf;
 
-use tauri::AppHandle;
-
 /// 单文件超过 1MB 时轮转为 desktop.log.1（更早的丢弃）。
 const MAX_LOG_BYTES: u64 = 1_000_000;
 
 /// 日志目录：exe 旁 logs\（打包后无法看 stdout）。
 /// 开发模式在 target\debug|release 下，向上回到 desktop-tauri；打包模式用 exe 所在目录。
 pub(crate) fn log_dir() -> PathBuf {
-    let base = if let Ok(exe) = std::env::current_exe() {
-        let mut d = exe.parent().map(PathBuf::from).unwrap_or_default();
-        if d.ends_with("debug") || d.ends_with("release") {
-            for _ in 0..3 {
-                d.pop();
-            }
-        }
-        d
-    } else {
-        PathBuf::from(".")
-    };
-    let dir = base.join("logs");
+    let dir = crate::paths::app_base_dir().join("logs");
     let _ = fs::create_dir_all(&dir);
     dir
 }
@@ -48,7 +35,7 @@ fn format_ts(ms: u128) -> String {
     format!("{y:04}-{mo:02}-{d:02} {h:02}:{m:02}:{s:02}")
 }
 
-pub(crate) fn log(app: &AppHandle, line: &str) {
+pub(crate) fn log(line: &str) {
     use std::io::Write;
     use std::time::{SystemTime, UNIX_EPOCH};
     let stamp = SystemTime::now()
@@ -57,12 +44,13 @@ pub(crate) fn log(app: &AppHandle, line: &str) {
         .unwrap_or(0);
     let entry = format!("[{}] {line}\n", format_ts(stamp));
     eprintln!("{entry}");
-    let path = log_dir().join("desktop.log");
+    let dir = log_dir();
+    let path = dir.join("desktop.log");
     // 轮转：超过 1MB 改名 desktop.log.1（旧的 .1 丢弃）
     if let Ok(meta) = fs::metadata(&path)
         && meta.len() > MAX_LOG_BYTES
     {
-        let _ = fs::rename(&path, log_dir().join("desktop.log.1"));
+        let _ = fs::rename(&path, dir.join("desktop.log.1"));
     }
     if let Ok(mut f) = fs::OpenOptions::new()
         .create(true)
@@ -71,5 +59,4 @@ pub(crate) fn log(app: &AppHandle, line: &str) {
     {
         let _ = f.write_all(entry.as_bytes());
     }
-    let _ = app;
 }

@@ -9,28 +9,10 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter};
 
 use crate::logging::log;
+use crate::paths;
 
-fn dsh_home() -> PathBuf {
-    if let Ok(env) = std::env::var("DSH_HOME") {
-        let trimmed = env.trim().to_string();
-        if !trimmed.is_empty() {
-            let p = if trimmed == "~" {
-                dirs_home()
-            } else if let Some(rest) = trimmed.strip_prefix("~/").or_else(|| trimmed.strip_prefix("~\\")) {
-                dirs_home().join(rest)
-            } else {
-                PathBuf::from(trimmed)
-            };
-            return p;
-        }
-    }
-    dirs_home().join(".dsh")
-}
-
-fn dirs_home() -> PathBuf {
-    std::env::var("USERPROFILE")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| PathBuf::from("."))
+fn settings_path() -> PathBuf {
+    paths::dsh_home().join("settings.yaml")
 }
 
 /// 读 locale.preference（zh/en 等），失败或未知回 zh（保持壳默认中文，
@@ -38,7 +20,7 @@ fn dirs_home() -> PathBuf {
 /// serde_yaml 正式解析取字段；dsh 未来若改字段名，此处拿不到值也只是
 /// 语言跟随失效、回退中文，不影响壳的其他功能。
 fn read_locale_preference() -> String {
-    let Ok(text) = fs::read_to_string(dsh_home().join("settings.yaml")) else {
+    let Ok(text) = fs::read_to_string(settings_path()) else {
         return "zh".into();
     };
     let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
@@ -63,7 +45,7 @@ fn read_locale_preference() -> String {
 /// 读取当前语言偏好并广播给壳页面（初始化时调用，壳页面据此渲染文案）。
 pub(crate) fn apply_locale(app: &AppHandle) {
     let locale = read_locale_preference();
-    log(app, &format!("dsh 语言偏好: {locale}"));
+    log(&format!("dsh 语言偏好: {locale}"));
     let _ = app.emit("locale-changed", locale);
 }
 
@@ -76,11 +58,11 @@ pub(crate) fn apply_locale(app: &AppHandle) {
 pub(crate) fn spawn_locale_watcher(handle: AppHandle) {
     std::thread::spawn(move || {
         use notify::Watcher;
-        let settings = dsh_home().join("settings.yaml");
+        let settings = settings_path();
         let mut last = read_locale_preference();
         let (tx, rx) = std::sync::mpsc::channel::<Result<notify::Event, notify::Error>>();
         let watcher = notify::recommended_watcher(tx).and_then(|mut w| {
-            let dir = dsh_home();
+            let dir = paths::dsh_home();
             let _ = std::fs::create_dir_all(&dir);
             w.watch(&dir, notify::RecursiveMode::NonRecursive)?;
             Ok(w)
@@ -88,7 +70,7 @@ pub(crate) fn spawn_locale_watcher(handle: AppHandle) {
         match watcher {
             Ok(w) => {
                 let _watcher = w; // 保持监听器存活
-                log(&handle, "语言监听已建立（目录监听 + 30s 兜底）");
+                log("语言监听已建立（目录监听 + 30s 兜底）");
                 loop {
                     let hit = match rx.recv_timeout(Duration::from_secs(30)) {
                         Ok(Ok(ev)) => ev.paths.iter().any(|p| p == &settings),
@@ -99,7 +81,7 @@ pub(crate) fn spawn_locale_watcher(handle: AppHandle) {
                         std::thread::sleep(Duration::from_millis(50));
                         let now = read_locale_preference();
                         if now != last {
-                            log(&handle, &format!("语言偏好变化（文件）: {now}"));
+                            log(&format!("语言偏好变化（文件）: {now}"));
                             last = now.clone();
                             let _ = handle.emit("locale-changed", now);
                         }
@@ -107,12 +89,12 @@ pub(crate) fn spawn_locale_watcher(handle: AppHandle) {
                 }
             }
             Err(e) => {
-                log(&handle, &format!("语言监听不可用（{e}），回退 500ms 轮询"));
+                log(&format!("语言监听不可用（{e}），回退 500ms 轮询"));
                 loop {
                     std::thread::sleep(Duration::from_millis(500));
                     let now = read_locale_preference();
                     if now != last {
-                        log(&handle, &format!("语言偏好变化（文件）: {now}"));
+                        log(&format!("语言偏好变化（文件）: {now}"));
                         last = now.clone();
                         let _ = handle.emit("locale-changed", now);
                     }

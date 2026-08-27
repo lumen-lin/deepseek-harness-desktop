@@ -15,6 +15,9 @@
 # 本地隐私配置（含本机路径，严禁提交）
 /src-tauri/.cargo/
 
+# 本地编译产物（安装包一律由 CI 生成，本地 exe 严禁提交）
+*.exe
+
 # 构建/包管理缓存
 /.bundle-cache
 /pnpm-cache

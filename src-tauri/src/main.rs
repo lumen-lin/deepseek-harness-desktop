@@ -8,6 +8,7 @@
 mod commands;
 mod locale;
 mod logging;
+mod paths;
 mod repo;
 mod server;
 mod theme;
@@ -21,6 +22,30 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{window::Color, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
+
+/// 判断 webview 是否允许导航到该 URL：精确匹配 host，避免 starts_with
+/// 把 `127.0.0.1.evil.com` 误判为本地地址。
+fn is_allowed_navigation(s: &str) -> bool {
+    if s.starts_with("tauri://") || s.starts_with("about:") {
+        return true;
+    }
+    let after_scheme = match s.strip_prefix("http://").or_else(|| s.strip_prefix("https://")) {
+        Some(r) => r,
+        None => return false,
+    };
+    // authority = host[:port]，取第一个 '/' 之前的部分
+    let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
+    // 提取 host：IPv6 写法 [::1]:3080 取方括号内；普通 host:port 取冒号前
+    let host = if let Some(end) = authority.find(']') {
+        &authority[1..end]
+    } else {
+        authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority)
+    };
+    matches!(
+        host,
+        "127.0.0.1" | "localhost" | "dsh.internal" | "tauri.localhost" | "::1"
+    )
+}
 
 fn main() {
     // panic 钩子：release 是 panic=abort，进程瞬间消失且无任何界面反馈；
@@ -57,12 +82,11 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         // 帧守卫脚本必须注入所有 frame：js_init_script 只进主 frame，dsh 页面
         // 全在 iframe 里拿不到（这是上一版外链拦截失败的原因）
-        .plugin({
-            let guard: tauri::plugin::TauriPlugin<tauri::Wry> = tauri::plugin::Builder::new("frame-guard")
+        .plugin(
+            tauri::plugin::Builder::<tauri::Wry>::new("frame-guard")
                 .js_init_script_on_all_frames(commands::FRAME_GUARD_JS)
-                .build();
-            guard
-        })
+                .build(),
+        )
         .manage(server::ServerProc(Mutex::new(None)))
         .manage(server::ServerUrl(Mutex::new(None)))
         .invoke_handler(tauri::generate_handler![
@@ -90,7 +114,6 @@ fn main() {
             //   （如插件市场的源码/更新说明链接）→ 转交系统默认浏览器
             // - on_navigation：主 frame 只允许壳页面与本地 dsh，外部地址同样
             //   转浏览器（返回 false 阻止 webview 自己导航）
-            let opener_handle = handle.clone();
             let main = tauri::WebviewWindowBuilder::new(
                 &handle,
                 "main",
@@ -114,18 +137,13 @@ fn main() {
             })
             .on_new_window(move |url, _features| {
                 let u = url.to_string();
-                log(&opener_handle, &format!("外部链接转浏览器: {u}"));
+                log(&format!("外部链接转浏览器: {u}"));
                 let _ = tauri_plugin_opener::open_url(&u, None::<String>);
                 tauri::webview::NewWindowResponse::Deny
             })
             .on_navigation(|url| {
                 let s = url.as_str();
-                let local = s.starts_with("http://127.0.0.1")
-                    || s.starts_with("http://localhost")
-                    || s.starts_with("http://dsh.internal")
-                    || s.starts_with("tauri://")
-                    || s.starts_with("http://tauri.localhost")
-                    || s.starts_with("about:");
+                let local = is_allowed_navigation(s);
                 if !local {
                     let _ = tauri_plugin_opener::open_url(s, None::<String>);
                 }
@@ -134,7 +152,8 @@ fn main() {
             .build()?;
 
             // 恢复上次退出时的窗口大小与位置（无记录则保持默认 1440×900 居中）
-            if let Some(st) = commands::load_window_state() {
+            let win_state = commands::load_window_state();
+            if let Some(st) = &win_state {
                 if !st.maximized {
                     let _ = main.set_position(tauri::PhysicalPosition::new(st.x, st.y));
                     let _ = main.set_size(tauri::PhysicalSize::new(st.w, st.h));
@@ -146,16 +165,16 @@ fn main() {
             theme::apply_theme_preference(app.handle());
             locale::apply_locale(app.handle());
             let _ = main.show();
-            if let Some(true) = commands::load_window_state().map(|s| s.maximized) {
+            if let Some(true) = win_state.as_ref().map(|s| s.maximized) {
                 let _ = main.maximize();
             }
-            log(app.handle(), "窗口已显示（服务器后台启动中）");
+            log("窗口已显示（服务器后台启动中）");
 
             // 仓库定位：自动失败则弹目录选择框
             let repo = match repo::locate_repo() {
                 Some(r) => r,
                 None => {
-                    log(app.handle(), "未自动找到仓库，等待用户选择");
+                    log("未自动找到仓库，等待用户选择");
                     let picked = app.dialog().file().blocking_pick_folder();
                     match picked {
                         Some(path) => {
@@ -172,27 +191,27 @@ fn main() {
                     }
                 }
             };
-            log(app.handle(), &format!("仓库目录: {}", repo.display()));
+            log(&format!("仓库目录: {}", repo.display()));
             repo::write_repo_config(&repo);
 
             // 服务器启动放后台线程：setup 立即返回，主线程事件循环保持运转，
             // 加载页（转圈动画）即时渲染——若在 setup 里阻塞等服务器，窗口
-            // 会冻结成白框直到就绪，主观上“启动慢”正是这么来的。
+            // 会冻结成白框直到就绪，主观上"启动慢"正是这么来的。
             // 错误弹窗用 blocking API，官方要求在非主线程调用，本线程正合适。
             {
                 let handle = handle.clone();
                 std::thread::spawn(move || {
                     // 先清理上次异常退出（崩溃/被强杀）可能遗留的服务器进程
-                    server::cleanup_stale_server(&handle);
+                    server::cleanup_stale_server();
 
                     let url = match server::start_server(&handle, &repo, server::DSH_PORT) {
                         Ok(u) => u,
                         Err(e) if e.contains("EADDRINUSE") => {
-                            log(&handle, &format!("固定端口 {} 被占用，回退随机端口: {e}", server::DSH_PORT));
+                            log(&format!("固定端口 {} 被占用，回退随机端口: {e}", server::DSH_PORT));
                             match server::start_server(&handle, &repo, 0) {
                                 Ok(u) => u,
                                 Err(e2) => {
-                                    log(&handle, &format!("启动失败: {e2}"));
+                                    log(&format!("启动失败: {e2}"));
                                     let _ = handle.dialog()
                                         .message(format!("DeepSeek Harness 启动失败\n\n{e2}"))
                                         .kind(MessageDialogKind::Error)
@@ -203,7 +222,7 @@ fn main() {
                             }
                         }
                         Err(e) => {
-                            log(&handle, &format!("启动失败: {e}"));
+                            log(&format!("启动失败: {e}"));
                             let _ = handle.dialog()
                                 .message(format!("DeepSeek Harness 启动失败\n\n{e}"))
                                 .kind(MessageDialogKind::Error)
@@ -319,7 +338,7 @@ fn main() {
                     tray = tray.icon(icon);
                 }
                 tray.build(app.handle())?;
-                log(app.handle(), "系统托盘已创建（点 X 隐藏到托盘）");
+                log("系统托盘已创建（点 X 隐藏到托盘）");
             }
 
             Ok(())
