@@ -155,11 +155,14 @@ fn locate_pnpm() -> Option<(String, Vec<String>)> {
     }
 }
 
+/// 每步命令的额外环境变量（构建步骤注入 official profile，其余步为空）。
+type StepEnvs = &'static [(&'static str, &'static str)];
+
 /// 组装三条更新命令。pnpm 两条复用探测结果（含 corepack 前置参数）。
-fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<(String, Vec<String>)> {
+fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<(String, Vec<String>, StepEnvs)> {
     let (program, prefix) = pnpm;
     vec![
-        ("git".into(), vec!["pull".into(), "--ff-only".into()]),
+        ("git".into(), vec!["pull".into(), "--ff-only".into()], &[]),
         // confirmModulesPurge：本壳以管道捕获输出（非 TTY），pnpm 在需要清理
         // modules 目录时会中止并等待终端确认，表现为"安装无声失败"。
         // 显式关闭该确认，保证非交互场景下安装能继续。
@@ -170,18 +173,29 @@ fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<(String, Vec<String>)> {
                 &["install".to_string(), "--config.confirmModulesPurge=false".to_string()],
             ]
             .concat(),
+            &[],
         ),
-        (program.clone(), [prefix.as_slice(), &["run".to_string(), "build".to_string()]].concat()),
+        // official profile：上游 scripts/build.ts 支持 --profile official /
+        // DSH_BUILD_CLIENT_PROFILE=official，构建时注入官方发布环境
+        // （DSH_CLIENT_TITLE=DeepSeek Harness 等，commit 与版本号自动取自
+        // git HEAD 与 package.json）。缺了它前端回退显示「DSH 本地构建」，
+        // 这就是侧边栏出现"本地构建"字样的原因。
+        (
+            program.clone(),
+            [prefix.as_slice(), &["run".to_string(), "build".to_string()]].concat(),
+            &[("DSH_BUILD_CLIENT_PROFILE", "official")],
+        ),
     ]
 }
 
 /// 执行一步更新命令，输出逐行推给前端；返回 (是否成功, 输出尾部)。
-fn run_update_step(app: &AppHandle, repo: &Path, index: usize, label: &str, program: &str, args: &[String]) -> (bool, String) {
+fn run_update_step(app: &AppHandle, repo: &Path, index: usize, label: &str, program: &str, args: &[String], envs: StepEnvs) -> (bool, String) {
     log(&format!("更新步骤[{label}] 开始"));
     let _ = app.emit("update-step", UpdateStepEvent { index, status: "running".into() });
 
     let mut cmd = Command::new(program);
     cmd.args(args)
+        .envs(envs.iter().copied())
         .current_dir(repo)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -284,9 +298,9 @@ fn rollback_and_rebuild(app: &AppHandle, repo: &Path, base: &str, pnpm: &(String
     }
     let commands = update_commands(pnpm);
     // 跳过步骤 0（git pull）：源码已回到基线，只需重建依赖与产物
-    for (i, (program, args)) in commands.iter().enumerate().skip(1) {
+    for (i, (program, args, envs)) in commands.iter().enumerate().skip(1) {
         let label = format!("回滚重建 · {}", UPDATE_STEP_LABELS[i]);
-        let (ok, _) = run_update_step(app, repo, i, &label, program, args);
+        let (ok, _) = run_update_step(app, repo, i, &label, program, args, envs);
         if !ok {
             log(&format!("回滚重建失败于：{}", UPDATE_STEP_LABELS[i]));
             return false;
@@ -345,8 +359,8 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
         log("强制重建：跳过 git pull，仅用当前源码重装依赖并重建产物");
     }
     while step < commands.len() {
-        let (program, args) = &commands[step];
-        let (ok, output) = run_update_step(&app, &repo, step, UPDATE_STEP_LABELS[step], program, args);
+        let (program, args, envs) = &commands[step];
+        let (ok, output) = run_update_step(&app, &repo, step, UPDATE_STEP_LABELS[step], program, args, envs);
         if ok {
             step += 1;
             continue;
