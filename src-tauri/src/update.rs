@@ -88,6 +88,8 @@ pub(crate) struct CheckResultPayload {
     pub local: String,
     /// 远端 upstream 短 hash。
     pub remote: String,
+    /// 该远端版本此前被记录为"构建失败"（上游自身编译不过），建议暂不更新。
+    pub known_bad: bool,
 }
 
 /// Tauri 命令：只检查不执行——fetch 并对比版本，返回结果由前端决定是否更新。
@@ -98,6 +100,7 @@ pub(crate) async fn check_update() -> Result<CheckResultPayload, String> {
     let (local, remote, _latest) = fetch_and_compare(&repo)?;
     Ok(CheckResultPayload {
         has_update: local != remote,
+        known_bad: repo::is_bad_remote(&remote),
         local: local[..7.min(local.len())].to_string(),
         remote: remote[..7.min(remote.len())].to_string(),
     })
@@ -302,7 +305,7 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
     let force = force.unwrap_or(false);
 
     // 先 fetch 对比：已是最新且非强制重建则直接返回，服务器原样在跑，应用不受影响
-    let (_local, _remote, latest) = fetch_and_compare(&repo)?;
+    let (_local, remote, latest) = fetch_and_compare(&repo)?;
     if latest && !force {
         log("已是最新版本，跳过更新流程");
         return Ok(UpdateResultPayload {
@@ -334,7 +337,13 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
     // stash 自动善后只试一次；step 不递增即重跑当前步（目前只有 git pull 需要）
     let mut failure: Option<(usize, String)> = None;
     let mut stashed_changes = false;
-    let mut step = 0usize;
+    // force（强制重建）= 只重建本地产物，绝不触碰源码版本：
+    // 远端版本可能自身构建不过（上游 bug），一 pull 就把可用源码换成坏代码，
+    // 反而把"重建自救"变成"再次变砖"。因此从步骤 1（install）开始。
+    let mut step = if force { 1 } else { 0usize };
+    if force {
+        log("强制重建：跳过 git pull，仅用当前源码重装依赖并重建产物");
+    }
     while step < commands.len() {
         let (program, args) = &commands[step];
         let (ok, output) = run_update_step(&app, &repo, step, UPDATE_STEP_LABELS[step], program, args);
@@ -363,6 +372,8 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
             // 成功：不恢复服务器、不退出应用——壳页面保留更新结果，
             // 前端显示「重启服务」按钮，用户手动调用 restart_server 以新版启动
             log("更新完成（等待用户手动重启服务）");
+            // 该远端版本已验证可构建：从坏版本黑名单移除（上游可能已修复）
+            repo::clear_bad_remote(&remote);
             Ok(UpdateResultPayload {
                 ok: true, failed_step: None, output_tail: None, already_latest: false,
                 prev_head: None, stashed_changes,
@@ -370,6 +381,15 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
             })
         }
         Some((step_index, output)) => {
+            // 构建步骤失败：常见于上游源码自身编译不过（导出缺失等）。
+            // 记入坏版本黑名单，之后检查更新时提前警告，避免反复更新到同一个坑。
+            if step_index + 1 == UPDATE_STEP_LABELS.len() && !remote.is_empty() {
+                log(&format!(
+                    "记录构建失败的远端版本 {}（后续检查更新将提示暂缓）",
+                    &remote[..7.min(remote.len())]
+                ));
+                repo::mark_bad_remote(&remote);
+            }
             // HEAD 已前移（pull 成功、install/build 失败）→ 可回滚到更新前
             let head_now = git_output(&repo, &["rev-parse", "HEAD"]).ok();
             let rollback_base = match (&prev_head, &head_now) {

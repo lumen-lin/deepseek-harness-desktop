@@ -351,6 +351,7 @@
         'fail.restart': '服务启动失败：{err}\n请确认 Node.js 可用后重试。',
         'fail.rolledback': '✅ 已自动回滚到更新前的版本并重新构建，服务器已恢复正常。\n（本次失败是官方代码自身构建不通过，与本壳无关）\n\n',
         'fail.rebuildfailed': '⚠️ 回滚后重建仍然失败：更新前的版本同样无法构建，请检查 Node.js / pnpm 环境后重试。\n\n',
+        'warn.knownbad': '⚠️ 该版本此前构建失败过（多半是官方代码自身编译不过）。现在更新大概率仍会失败并自动回滚，建议等官方修复后再试。',
       },
       en: {
         'title.help': 'Help',
@@ -392,6 +393,7 @@
         'fail.restart': 'Failed to start the server: {err}\nMake sure Node.js is available and try again.',
         'fail.rolledback': '✅ Automatically rolled back to the previous version and rebuilt; the server is running again.\n(The failure came from the upstream source failing to build, not from this shell.)\n\n',
         'fail.rebuildfailed': '⚠️ Rebuild after rollback also failed: the previous version cannot be built either. Check your Node.js / pnpm setup and retry.\n\n',
+        'warn.knownbad': '⚠️ This version failed to build before (usually the upstream source does not compile). Updating will likely fail and roll back — consider waiting for an upstream fix.',
       },
     }
     let LANG = 'zh'
@@ -627,7 +629,8 @@
         if (r.has_update) {
           $('ver-local').textContent = r.local
           $('ver-remote').textContent = r.remote
-          setPhase('hasupdate')
+          // 该远端版本此前构建失败过：提前警示，别让用户盲目跳进同一个坑
+          setPhase('hasupdate', r.known_bad ? t('warn.knownbad') : '')
         } else {
           setPhase('latest')
         }
