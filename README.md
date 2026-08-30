@@ -114,6 +114,7 @@ desktop-tauri/
 │   │   ├── main.rs     # 应用入口：窗口、仓库定位、事件路由
 │   │   ├── commands.rs # Tauri 命令（版本/打开目录/退出等）
 │   │   ├── server.rs   # dsh web 子进程启动与就绪解析
+│   │   ├── shell.rs    # 壳页面本地服务站（同站托管，见下方「为什么」）
 │   │   ├── update.rs   # 自动更新流程（git pull + pnpm + build）
 │   │   ├── theme.rs    # 主题跟随（settings.yaml 监听）
 │   │   ├── locale.rs   # 语言跟随（settings.yaml 监听）

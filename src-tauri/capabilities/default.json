@@ -1,8 +1,9 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "主窗口（本地壳页面）权限：事件、命令与自绘标题栏的窗口控制（拖拽/最小化/最大化/关闭）",
+  "description": "主窗口（壳页面）权限：事件、命令与自绘标题栏的窗口控制（拖拽/最小化/最大化/关闭）。壳页面由本地服务站提供（http://127.0.0.1:<随机端口>），故放行 127.0.0.1 远程来源",
   "local": true,
+  "remote": { "urls": ["http://127.0.0.1:*/*", "http://127.0.0.1:*"] },
   "windows": ["main"],
   "permissions": [
     "core:default",

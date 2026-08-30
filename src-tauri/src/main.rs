@@ -11,6 +11,7 @@ mod logging;
 mod paths;
 mod repo;
 mod server;
+mod shell;
 mod theme;
 mod update;
 
@@ -108,6 +109,18 @@ fn main() {
         .setup(|app| {
             let handle = app.handle().clone();
 
+            // 壳页面改由本地服务站提供，不再走 Tauri 自定义协议：
+            // dsh ≥0.1.2 的浏览器会话 cookie 带 SameSite=Strict，只在「请求站点
+            // 等于顶层站点」时发送。壳页面若在 tauri:// 下，dsh iframe 属于跨站
+            // 上下文，cookie 既不落地也不回传，首页与 /api 全部 401。
+            // 两者同处 127.0.0.1（SameSite 只看 host 不看端口）即可同站。
+            // 详见 src/shell.rs 顶部说明。
+            let shell_page = shell::start_shell_server()?;
+            let shell_page: tauri::Url = match shell_page.parse() {
+                Ok(u) => u,
+                Err(e) => return Err(format!("壳页面 URL 非法: {e}").into()),
+            };
+
             // 主窗口用代码创建（而非 tauri.conf.json）：需要挂 on_new_window /
             // on_navigation 两个 handler，它们只存在于 Builder 上。
             // - on_new_window：iframe 里 target=_blank / window.open 的链接
@@ -117,7 +130,7 @@ fn main() {
             let main = tauri::WebviewWindowBuilder::new(
                 &handle,
                 "main",
-                tauri::WebviewUrl::App("index.html".into()),
+                tauri::WebviewUrl::External(shell_page),
             )
             .title("DeepSeek Harness")
             .inner_size(1440.0, 900.0)
