@@ -42,6 +42,10 @@ pub(crate) struct UpdateResultPayload {
     pub prev_head: Option<String>,
     /// pull 被本地未提交改动阻止时已自动 stash：提示用户可用 git stash pop 找回。
     pub stashed_changes: bool,
+    /// 更新失败后已自动回滚源码并重建成功：服务器已恢复为更新前版本运行。
+    pub auto_rolled_back: bool,
+    /// 回滚后的重建也失败（连更新前版本都构建不过）：需用户手动介入。
+    pub rollback_rebuild_failed: bool,
 }
 
 /// 静默跑 git 子命令并取 stdout（不出控制台窗口）。
@@ -153,7 +157,17 @@ fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<(String, Vec<String>)> {
     let (program, prefix) = pnpm;
     vec![
         ("git".into(), vec!["pull".into(), "--ff-only".into()]),
-        (program.clone(), [prefix.as_slice(), &["install".to_string()]].concat()),
+        // confirmModulesPurge：本壳以管道捕获输出（非 TTY），pnpm 在需要清理
+        // modules 目录时会中止并等待终端确认，表现为"安装无声失败"。
+        // 显式关闭该确认，保证非交互场景下安装能继续。
+        (
+            program.clone(),
+            [
+                prefix.as_slice(),
+                &["install".to_string(), "--config.confirmModulesPurge=false".to_string()],
+            ]
+            .concat(),
+        ),
         (program.clone(), [prefix.as_slice(), &["run".to_string(), "build".to_string()]].concat()),
     ]
 }
@@ -252,6 +266,33 @@ fn restore_server(app: &AppHandle, repo: &Path) {
     }
 }
 
+/// 回滚源码到基线提交并重新构建（跳过 git pull，只跑 install + build）。
+///
+/// 存在意义：pull 成功但 install/build 失败时，源码已是新版、产物却是半成品，
+/// 此时直接启动服务器必然崩溃（loader 找不到缺失的 lib）。只有把源码退回能
+/// 构建的版本并完整重建，才能恢复出一个可用的服务——这是"更新失败后残废"
+/// 的自救路径。
+fn rollback_and_rebuild(app: &AppHandle, repo: &Path, base: &str, pnpm: &(String, Vec<String>)) -> bool {
+    let short = &base[..8.min(base.len())];
+    log(&format!("自动回滚源码到更新前版本 {short}"));
+    if let Err(e) = git_output(repo, &["reset", "--hard", base]) {
+        log(&format!("回滚失败（git reset）: {e}"));
+        return false;
+    }
+    let commands = update_commands(pnpm);
+    // 跳过步骤 0（git pull）：源码已回到基线，只需重建依赖与产物
+    for (i, (program, args)) in commands.iter().enumerate().skip(1) {
+        let label = format!("回滚重建 · {}", UPDATE_STEP_LABELS[i]);
+        let (ok, _) = run_update_step(app, repo, i, &label, program, args);
+        if !ok {
+            log(&format!("回滚重建失败于：{}", UPDATE_STEP_LABELS[i]));
+            return false;
+        }
+    }
+    log("回滚重建完成：源码已回到更新前版本，产物完整");
+    true
+}
+
 /// Tauri 命令：执行完整更新流程。前端 invoke，事件驱动进度。
 /// force = true 时跳过"已是最新"短路，强制重新执行 install + build
 /// （用于构建曾被中断、产物与源码脱节的自救场景）。
@@ -267,6 +308,7 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
         return Ok(UpdateResultPayload {
             ok: true, failed_step: None, output_tail: None, already_latest: true,
             prev_head: None, stashed_changes: false,
+            auto_rolled_back: false, rollback_rebuild_failed: false,
         });
     }
     if force {
@@ -324,16 +366,30 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
             Ok(UpdateResultPayload {
                 ok: true, failed_step: None, output_tail: None, already_latest: false,
                 prev_head: None, stashed_changes,
+                auto_rolled_back: false, rollback_rebuild_failed: false,
             })
         }
         Some((step_index, output)) => {
-            restore_server(&app, &repo);
-            // HEAD 已前移（pull 成功、后续失败）→ 提供回滚目标
+            // HEAD 已前移（pull 成功、install/build 失败）→ 可回滚到更新前
             let head_now = git_output(&repo, &["rev-parse", "HEAD"]).ok();
             let rollback_base = match (&prev_head, &head_now) {
                 (Some(a), Some(b)) if a != b => Some(a.clone()),
                 _ => None,
             };
+
+            // 源码已前移 + 后续步骤失败 = 产物半成品，直接起服务必然崩溃
+            // （loader 找不到缺失模块）。先回滚重建出可用产物，再恢复服务。
+            let mut auto_rolled_back = false;
+            let mut rollback_rebuild_failed = false;
+            if let Some(base) = &rollback_base {
+                if rollback_and_rebuild(&app, &repo, base, &pnpm) {
+                    auto_rolled_back = true;
+                } else {
+                    rollback_rebuild_failed = true;
+                    log("回滚重建未成功：更新前版本同样无法构建，需手动处理");
+                }
+            }
+            restore_server(&app, &repo);
             Ok(UpdateResultPayload {
                 ok: false,
                 failed_step: Some(UPDATE_STEP_LABELS[step_index].to_string()),
@@ -341,6 +397,8 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
                 already_latest: false,
                 prev_head: rollback_base,
                 stashed_changes,
+                auto_rolled_back,
+                rollback_rebuild_failed,
             })
         }
     }
@@ -359,6 +417,15 @@ pub(crate) async fn rollback_update(app: AppHandle, commit: String) -> Result<()
     log(&format!("回滚到更新前提交 {}", &commit[..8.min(commit.len())]));
     kill_server(&app);
     git_output(&repo, &["reset", "--hard", &commit]).map_err(|e| format!("git reset 失败: {e}"))?;
+    // 只 reset 不够：node_modules 与产物仍是新版半成品，不重建服务器依旧起不来
+    match locate_pnpm() {
+        Some(pnpm) => {
+            if !rollback_and_rebuild(&app, &repo, &commit, &pnpm) {
+                log("回滚后重建失败：服务器可能仍无法启动，可尝试「强制重建」");
+            }
+        }
+        None => log("未找到 pnpm，跳过重建：产物可能与回滚后的源码不匹配"),
+    }
     restore_server(&app, &repo);
     log("已回滚到旧版源码，服务器以旧版本重新启动");
     Ok(())

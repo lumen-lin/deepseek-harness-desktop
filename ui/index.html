@@ -349,6 +349,8 @@
         'fail.stashhint': '\n\n本地未提交的改动已自动暂存（git stash），之后可在仓库目录执行 git stash pop 找回。',
         'fail.rollback': '回滚失败：{err}',
         'fail.restart': '服务启动失败：{err}\n请确认 Node.js 可用后重试。',
+        'fail.rolledback': '✅ 已自动回滚到更新前的版本并重新构建，服务器已恢复正常。\n（本次失败是官方代码自身构建不通过，与本壳无关）\n\n',
+        'fail.rebuildfailed': '⚠️ 回滚后重建仍然失败：更新前的版本同样无法构建，请检查 Node.js / pnpm 环境后重试。\n\n',
       },
       en: {
         'title.help': 'Help',
@@ -388,6 +390,8 @@
         'fail.stashhint': '\n\nUncommitted local changes were auto-stashed (git stash). Run "git stash pop" in the repository to restore them.',
         'fail.rollback': 'Rollback failed: {err}',
         'fail.restart': 'Failed to start the server: {err}\nMake sure Node.js is available and try again.',
+        'fail.rolledback': '✅ Automatically rolled back to the previous version and rebuilt; the server is running again.\n(The failure came from the upstream source failing to build, not from this shell.)\n\n',
+        'fail.rebuildfailed': '⚠️ Rebuild after rollback also failed: the previous version cannot be built either. Check your Node.js / pnpm setup and retry.\n\n',
       },
     }
     let LANG = 'zh'
@@ -669,8 +673,15 @@
         } else {
           let failMsg = t('fail.step', { step: result.failed_step, tail: result.output_tail || '(无输出)' })
           if (result.stashed_changes) failMsg += t('fail.stashhint')
+          // 已自动回滚并重建成功：服务已恢复，无需再提示手动回滚
+          if (result.auto_rolled_back) {
+            failMsg = t('fail.rolledback') + failMsg
+            rollbackCommit = null
+          } else {
+            rollbackCommit = result.prev_head || null
+          }
+          if (result.rollback_rebuild_failed) failMsg = t('fail.rebuildfailed') + failMsg
           setPhase('failed', failMsg)
-          rollbackCommit = result.prev_head || null
           if (rollbackCommit) $('btn-rollback').style.display = 'inline-block'
           titlebar.classList.remove('updating')
         }
