@@ -1,5 +1,6 @@
 //! 仓库自动更新：先 git fetch 对比（已最新则跳过），再 pull → install → build。
 
+use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -12,10 +13,18 @@ use crate::logging::log;
 use crate::repo;
 use crate::server::{creation_flags_windows, kill_server, start_server, DSH_PORT, ServerUrl};
 
-/// 更新步骤标签（前端进度列表与此一一对应）：git pull → pnpm install → pnpm build。
+/// 更新步骤标签（前端进度列表与此一一对应）：
+/// git pull → pnpm install → pnpm run clean → pnpm run build。
+///
+/// clean 是后补的关键一步：`pnpm run build` 内部是「tsc -b 增量编译 → tsdown
+/// 打包」，而 tsdown 的入口就是 tsc 的**上一次**产物（各包的 lib/types/*.js）。
+/// 跨版本 git pull 后，这些旧产物不会自动失效——它们引用的是旧版源码的导出，
+/// 于是 tsdown 拿着旧产物去匹配新源码，报 MISSING_EXPORT（"xxx 未被导出"）。
+/// 先 clean 掉全部 lib 与 .tsbuildinfo，让 tsc 全量重编，产物才与源码一致。
 const UPDATE_STEP_LABELS: &[&str] = &[
     "拉取官方最新代码（git pull）",
     "安装依赖（pnpm install）",
+    "清理旧构建产物（pnpm run clean）",
     "重新构建（pnpm run build）",
 ];
 
@@ -65,8 +74,62 @@ fn git_output(repo: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// 清除残留的 .git/index.lock。
+///
+/// 存在意义：git 被强行中断（更新流程被打断、窗口被杀、手动 Ctrl+C）后会留下
+/// index.lock 且不会自动清理。此后**任何写索引的操作**（pull / reset / checkout）
+/// 都会以「Unable to create '.git/index.lock': File exists」直接失败，更新流程
+/// 卡死在第一步，且报错信息与真实原因毫不相干。这里在每次写操作前主动清掉。
+///
+/// 保险：60 秒内新建的 lock 视为"另一个 git 正在运行"，不碰它。
+fn clear_stale_git_lock(repo: &Path) {
+    let lock = repo.join(".git").join("index.lock");
+    let Ok(meta) = fs::metadata(&lock) else { return };
+    let age = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| d.as_secs());
+    match age {
+        Some(secs) if secs < 60 => {
+            log(&format!(".git/index.lock 存在但仅 {secs} 秒前创建，判为 git 正在运行，跳过清理"));
+        }
+        Some(secs) => {
+            log(&format!("清除残留的 .git/index.lock（已存在 {secs} 秒，上次 git 操作被中断）"));
+            let _ = fs::remove_file(&lock);
+        }
+        None => {
+            log("清除残留的 .git/index.lock（无法读取时间，按陈旧锁处理）");
+            let _ = fs::remove_file(&lock);
+        }
+    }
+}
+
+/// 还原被本地弄脏的托管文件（package.json / pnpm-lock.yaml）。
+///
+/// 存在意义：pnpm install 的副作用或手工微调常把这两个文件改脏。pull 时它们
+/// 与上游改动冲突 → 触发自动 stash → 改动被藏起来（用户以为修好了，下次又冒
+/// 出来），stash 还越堆越多。这两个文件属于「跟随上游」的托管文件，不是用户
+/// 资产，还原它们让 pull 保持纯快进。其它文件的本地改动仍走原来的 stash 路径。
+fn restore_managed_files(repo: &Path) {
+    for name in ["package.json", "pnpm-lock.yaml"] {
+        if !repo.join(name).is_file() {
+            continue;
+        }
+        // git diff --quiet 在有改动时返回非 0：只有真脏了才还原，避免无谓调用
+        if git_output(repo, &["diff", "--quiet", "--", name]).is_err() {
+            log(&format!("还原本地改动：{name}（跟随上游的托管文件）"));
+            if let Err(e) = git_output(repo, &["checkout", "--", name]) {
+                log(&format!("还原 {name} 失败: {e}"));
+            }
+        }
+    }
+}
+
 /// fetch 远端并返回 (本地 HEAD, 远端 upstream, 是否一致)。
 fn fetch_and_compare(repo: &Path) -> Result<(String, String, bool), String> {
+    // 写索引前先清陈旧锁：否则 fetch 后的 pull / reset 一定失败
+    clear_stale_git_lock(repo);
     log("检查更新：git fetch origin");
     git_output(repo, &["fetch", "origin"])?;
     let local = git_output(repo, &["rev-parse", "HEAD"])?;
@@ -119,6 +182,30 @@ fn looks_like_local_change_conflict(output: &str) -> bool {
     .any(|k| s.contains(k))
 }
 
+/// 判断 git 失败输出是否为临时网络故障（值得原样重试）。
+///
+/// 存在意义：国内访问 GitHub 常出现 "Empty reply from server"、
+/// "CONNECT tunnel failed" 之类的一次性错误。不重试的话，用户点一次更新
+/// 就看到「拉取代码失败」，误以为是功能坏了。
+fn looks_like_network_error(output: &str) -> bool {
+    let s = output.to_lowercase();
+    [
+        "empty reply from server",
+        "connection timed out",
+        "failed to connect",
+        "couldn't connect to server",
+        "could not connect to server",
+        "connect tunnel failed",
+        "connection reset by peer",
+        "unable to access",
+        "early eof",
+        "rpc failed",
+        "the remote end hung up",
+    ]
+    .iter()
+    .any(|k| s.contains(k))
+}
+
 /// 探测 pnpm 的实际调用方式，返回 (程序, 前置参数)。
 /// Windows 上 CreateProcess 只认 .exe：npm 全局安装的 pnpm 只是 .cmd 垫片
 /// （按 PATHEXT 找扩展名的约定只属于 shell，不属于操作系统 API），直接
@@ -158,11 +245,18 @@ fn locate_pnpm() -> Option<(String, Vec<String>)> {
 /// 每步命令的额外环境变量（构建步骤注入 official profile，其余步为空）。
 type StepEnvs = &'static [(&'static str, &'static str)];
 
-/// 组装三条更新命令。pnpm 两条复用探测结果（含 corepack 前置参数）。
-fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<(String, Vec<String>, StepEnvs)> {
+/// 一条更新命令：程序、参数、环境变量、以及「失败是否可容忍」。
+///
+/// 只有 clean 可容忍失败：它只是删除产物，失败（例如目录被占用）最多导致
+/// 后续重建不彻底，但绝不能因此中断更新——留着旧产物照样进 build 更糟的是
+/// 直接把可用版本判死。clean 失败时记录日志并继续。
+type UpdateCommand = (String, Vec<String>, StepEnvs, bool);
+
+/// 组装更新命令。pnpm 三条复用探测结果（含 corepack 前置参数）。
+fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<UpdateCommand> {
     let (program, prefix) = pnpm;
     vec![
-        ("git".into(), vec!["pull".into(), "--ff-only".into()], &[]),
+        ("git".into(), vec!["pull".into(), "--ff-only".into()], &[], false),
         // confirmModulesPurge：本壳以管道捕获输出（非 TTY），pnpm 在需要清理
         // modules 目录时会中止并等待终端确认，表现为"安装无声失败"。
         // 显式关闭该确认，保证非交互场景下安装能继续。
@@ -174,6 +268,17 @@ fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<(String, Vec<String>, St
             ]
             .concat(),
             &[],
+            false,
+        ),
+        // clean：清掉各包 lib 产物与 .tsbuildinfo，强制 tsc 全量重编。
+        // 不做这一步，tsdown 会把上一次的旧产物当入口打包，跨版本更新后必然
+        // 报 MISSING_EXPORT（"某导出不存在"）——那是产物陈旧，不是源码有问题。
+        // 上游 scripts/clean.ts 只删构建输出与孤儿目录，不碰 node_modules。
+        (
+            program.clone(),
+            [prefix.as_slice(), &["run".to_string(), "clean".to_string()]].concat(),
+            &[],
+            true,
         ),
         // official profile：上游 scripts/build.ts 支持 --profile official /
         // DSH_BUILD_CLIENT_PROFILE=official，构建时注入官方发布环境
@@ -184,6 +289,7 @@ fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<(String, Vec<String>, St
             program.clone(),
             [prefix.as_slice(), &["run".to_string(), "build".to_string()]].concat(),
             &[("DSH_BUILD_CLIENT_PROFILE", "official")],
+            false,
         ),
     ]
 }
@@ -298,10 +404,15 @@ fn rollback_and_rebuild(app: &AppHandle, repo: &Path, base: &str, pnpm: &(String
     }
     let commands = update_commands(pnpm);
     // 跳过步骤 0（git pull）：源码已回到基线，只需重建依赖与产物
-    for (i, (program, args, envs)) in commands.iter().enumerate().skip(1) {
+    for (i, (program, args, envs, _tolerated)) in commands.iter().enumerate().skip(1) {
         let label = format!("回滚重建 · {}", UPDATE_STEP_LABELS[i]);
         let (ok, _) = run_update_step(app, repo, i, &label, program, args, envs);
         if !ok {
+            // clean 失败可容忍（与正向更新同策略），其余失败即回滚重建失败
+            if *_tolerated {
+                log(&format!("回滚重建：步骤[{}]失败但可容忍，继续", UPDATE_STEP_LABELS[i]));
+                continue;
+            }
             log(&format!("回滚重建失败于：{}", UPDATE_STEP_LABELS[i]));
             return false;
         }
@@ -344,6 +455,11 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
     // 更新前基线提交：pull 成功但后续步骤失败时，供「回滚到更新前」使用
     let prev_head = git_output(&repo, &["rev-parse", "HEAD"]).ok();
 
+    // pull 前先清陈旧锁 + 还原托管文件：两者任一没做，pull 都会以与真实原因
+    // 无关的报错失败（index.lock / 本地改动冲突），看似"更新功能坏了"
+    clear_stale_git_lock(&repo);
+    restore_managed_files(&repo);
+
     kill_server(&app);
     UPDATING.store(true, Ordering::SeqCst);
     let _guard = UpdateGuard;
@@ -351,6 +467,7 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
     // stash 自动善后只试一次；step 不递增即重跑当前步（目前只有 git pull 需要）
     let mut failure: Option<(usize, String)> = None;
     let mut stashed_changes = false;
+    let mut pull_retries = 0usize;
     // force（强制重建）= 只重建本地产物，绝不触碰源码版本：
     // 远端版本可能自身构建不过（上游 bug），一 pull 就把可用源码换成坏代码，
     // 反而把"重建自救"变成"再次变砖"。因此从步骤 1（install）开始。
@@ -359,10 +476,32 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
         log("强制重建：跳过 git pull，仅用当前源码重装依赖并重建产物");
     }
     while step < commands.len() {
-        let (program, args, envs) = &commands[step];
+        let (program, args, envs, tolerated) = &commands[step];
         let (ok, output) = run_update_step(&app, &repo, step, UPDATE_STEP_LABELS[step], program, args, envs);
         if ok {
             step += 1;
+            continue;
+        }
+        // 可容忍步骤（clean）失败：记日志继续，不中断更新
+        if *tolerated {
+            log(&format!(
+                "步骤[{}]失败但可容忍，继续下一步（失败输出尾部：{}）",
+                UPDATE_STEP_LABELS[step],
+                tail_chars(&output, 300)
+            ));
+            step += 1;
+            continue;
+        }
+        // git pull 遭遇临时网络故障：等几秒原样重试（最多 3 次）
+        if step == 0 && pull_retries < 3 && looks_like_network_error(&output) {
+            pull_retries += 1;
+            log(&format!(
+                "git pull 遭遇网络故障，{} 秒后重试（第 {}/3 次）：{}",
+                pull_retries * 5,
+                pull_retries,
+                tail_chars(&output, 200)
+            ));
+            std::thread::sleep(std::time::Duration::from_secs(pull_retries as u64 * 5));
             continue;
         }
         // git pull 被本地未提交改动阻止：自动 stash（含未跟踪文件）后重试一次。
@@ -450,6 +589,8 @@ pub(crate) async fn rollback_update(app: AppHandle, commit: String) -> Result<()
     let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
     log(&format!("回滚到更新前提交 {}", &commit[..8.min(commit.len())]));
     kill_server(&app);
+    // reset --hard 同样要写索引：先清陈旧锁，否则回滚也卡在同一处
+    clear_stale_git_lock(&repo);
     git_output(&repo, &["reset", "--hard", &commit]).map_err(|e| format!("git reset 失败: {e}"))?;
     // 只 reset 不够：node_modules 与产物仍是新版半成品，不重建服务器依旧起不来
     match locate_pnpm() {

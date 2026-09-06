@@ -239,6 +239,7 @@
         <ol id="steps">
           <li data-status="pending" data-i18n="step.pull">拉取官方最新代码（git pull）</li>
           <li data-status="pending" data-i18n="step.install">安装依赖（pnpm install）</li>
+          <li data-status="pending" data-i18n="step.clean">清理旧构建产物（pnpm run clean）</li>
           <li data-status="pending" data-i18n="step.build">重新构建（pnpm run build）</li>
         </ol>
         <details id="update-log-wrap">
@@ -318,7 +319,7 @@
         'wc.min': '最小化', 'wc.max': '最大化', 'wc.close': '关闭',
         'loading.title': '正在启动 DeepSeek Harness…',
         'dead.title': '服务器已停止运行', 'dead.hint': 'dsh web 服务进程意外退出', 'dead.restart': '重启应用',
-        'step.pull': '拉取官方最新代码（git pull）', 'step.install': '安装依赖（pnpm install）', 'step.build': '重新构建（pnpm run build）',
+        'step.pull': '拉取官方最新代码（git pull）', 'step.install': '安装依赖（pnpm install）', 'step.clean': '清理旧构建产物（pnpm run clean）', 'step.build': '重新构建（pnpm run build）',
         'log.summary': '详细日志',
         'menu.viewlog': '查看运行日志',
         'log.title': '运行日志', 'log.follow': '自动滚动', 'log.copy': '复制全部', 'log.filterPh': '过滤关键字…',
@@ -338,7 +339,7 @@
         'about.fail': '版本信息读取失败：{err}',
         'unknown': '未知',
         'ph.checking.title': '正在检查更新…', 'ph.checking.hint': '对比本地与官方远端版本',
-        'ph.hasupdate.title': '发现新版本', 'ph.hasupdate.hint': '官方发布了新版本。更新将执行：拉取代码 → 安装依赖 → 重新构建；完成后点击「重启服务」即可用新版本。',
+        'ph.hasupdate.title': '发现新版本', 'ph.hasupdate.hint': '官方发布了新版本。更新将执行：拉取代码 → 安装依赖 → 清理旧产物 → 重新构建；完成后点击「重启服务」即可用新版本。',
         'ph.latest.title': '已是最新版本', 'ph.latest.hint': '当前版本与官方远端一致。\n如上次构建曾被中断，可用「强制重建」重装并重建本地产物。',
         'ph.running.title': '正在更新 DeepSeek Harness', 'ph.running.hint': '构建步骤可能需要几分钟，请勿关闭本窗口',
         'ph.runningForce.title': '正在重建 DeepSeek Harness',
@@ -360,7 +361,7 @@
         'wc.min': 'Minimize', 'wc.max': 'Maximize', 'wc.close': 'Close',
         'loading.title': 'Starting DeepSeek Harness…',
         'dead.title': 'Server Stopped', 'dead.hint': 'The dsh web server exited unexpectedly', 'dead.restart': 'Restart App',
-        'step.pull': 'Pull latest code (git pull)', 'step.install': 'Install dependencies (pnpm install)', 'step.build': 'Rebuild (pnpm run build)',
+        'step.pull': 'Pull latest code (git pull)', 'step.install': 'Install dependencies (pnpm install)', 'step.clean': 'Clear stale build output (pnpm run clean)', 'step.build': 'Rebuild (pnpm run build)',
         'log.summary': 'Details',
         'menu.viewlog': 'View Runtime Logs',
         'log.title': 'Runtime Logs', 'log.follow': 'Auto-scroll', 'log.copy': 'Copy All', 'log.filterPh': 'Filter keywords…',
@@ -380,7 +381,7 @@
         'about.fail': 'Failed to read version info: {err}',
         'unknown': 'unknown',
         'ph.checking.title': 'Checking for updates…', 'ph.checking.hint': 'Comparing local and remote versions',
-        'ph.hasupdate.title': 'New Version Available', 'ph.hasupdate.hint': 'A new version is available. Update will: pull code → install deps → rebuild. Click "Restart Server" when finished to use the new version.',
+        'ph.hasupdate.title': 'New Version Available', 'ph.hasupdate.hint': 'A new version is available. Update will: pull code → install deps → clean stale output → rebuild. Click "Restart Server" when finished to use the new version.',
         'ph.latest.title': 'Up to Date', 'ph.latest.hint': 'Current version matches the remote.\nIf a previous build was interrupted, use "Force Rebuild" to rebuild local artifacts.',
         'ph.running.title': 'Updating DeepSeek Harness', 'ph.running.hint': 'Building may take a few minutes. Do not close this window.',
         'ph.runningForce.title': 'Rebuilding DeepSeek Harness',
