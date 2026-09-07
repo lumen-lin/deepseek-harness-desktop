@@ -143,29 +143,102 @@ fn fetch_and_compare(repo: &Path) -> Result<(String, String, bool), String> {
     Ok((local, remote, latest))
 }
 
-#[derive(Serialize)]
-pub(crate) struct CheckResultPayload {
-    /// 远端是否有新版本（本地落后远端）。
-    pub has_update: bool,
-    /// 本地 HEAD 短 hash。
-    pub local: String,
-    /// 远端 upstream 短 hash。
-    pub remote: String,
-    /// 该远端版本此前被记录为"构建失败"（上游自身编译不过），建议暂不更新。
+/// 检查更新返回：本地 HEAD + 全部可选版本（master + 远端 dsh-* tags）。
+/// 前端据此渲染版本下拉框，用户可自选更新目标（默认跟随 master）。
+#[derive(Serialize, Clone)]
+pub(crate) struct VersionEntry {
+    /// 传给 run_update 的 target 值："master" 或 tag 名（如 "dsh-v0.1.0-rc.8"）。
+    pub reference: String,
+    /// 该版本指向的 commit 完整 hash（tag 为注解标签时取 peeled 目标）。
+    pub commit: String,
+    /// 版本类别："latest"（master）/ "alpha" / "rc" / "stable"。
+    pub kind: String,
+    /// 是否等于本地当前 HEAD。
+    pub is_current: bool,
+    /// 该版本此前是否被记录为"构建失败"。
     pub known_bad: bool,
 }
 
-/// Tauri 命令：只检查不执行——fetch 并对比版本，返回结果由前端决定是否更新。
-/// 不触碰服务器，用户"只想看看有没有新版本"的场景随时可安全返回。
+#[derive(Serialize)]
+pub(crate) struct VersionsPayload {
+    pub local: String,
+    pub entries: Vec<VersionEntry>,
+}
+
+/// Tauri 命令：只检查不执行——fetch（含 tags）并返回可选版本列表。
+/// 不触碰服务器，用户"只想看看有什么版本"的场景随时可安全返回。
 #[tauri::command]
-pub(crate) async fn check_update() -> Result<CheckResultPayload, String> {
+pub(crate) async fn check_update() -> Result<VersionsPayload, String> {
     let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
-    let (local, remote, _latest) = fetch_and_compare(&repo)?;
-    Ok(CheckResultPayload {
-        has_update: local != remote,
-        known_bad: repo::is_bad_remote(&remote),
-        local: local[..7.min(local.len())].to_string(),
-        remote: remote[..7.min(remote.len())].to_string(),
+    clear_stale_git_lock(&repo);
+    log("检查更新：git fetch origin --tags");
+    // --force：本地 tag 可能与上游移动/删除的旧引用冲突，强制对齐远端
+    git_output(&repo, &["fetch", "origin", "--tags", "--force"])?;
+    let local = git_output(&repo, &["rev-parse", "HEAD"])?;
+
+    let mut entries: Vec<VersionEntry> = Vec::new();
+    // master（官方最新主线，跟随自动更新）
+    if let Ok(m) = git_output(&repo, &["rev-parse", "origin/master"]) {
+        if !m.is_empty() {
+            entries.push(VersionEntry {
+                reference: "master".into(),
+                commit: m.clone(),
+                kind: "latest".into(),
+                is_current: m == local,
+                known_bad: repo::is_bad_remote(&m),
+            });
+        }
+    }
+    // 远端 dsh-* tags（release / rc / alpha 全列出来供选择，含历史稳定版）
+    // %(*objectname) 是注解标签的 peeled 目标（真正的 commit）
+    if let Ok(tags) = git_output(
+        &repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname)\t%(objectname)\t%(*objectname)",
+            "refs/tags/dsh-*",
+        ],
+    ) {
+        for line in tags.lines() {
+            let mut it = line.split('\t');
+            let full_ref = it.next().unwrap_or("");
+            let obj = it.next().unwrap_or("");
+            let peeled = it.next().unwrap_or("");
+            let tag_name = full_ref.strip_prefix("refs/tags/").unwrap_or(full_ref);
+            if tag_name.is_empty() {
+                continue;
+            }
+            let commit = if peeled.is_empty() { obj } else { peeled };
+            if commit.is_empty() {
+                continue;
+            }
+            let kind = if tag_name.contains("-alpha") {
+                "alpha"
+            } else if tag_name.contains("-rc") {
+                "rc"
+            } else {
+                "stable"
+            };
+            entries.push(VersionEntry {
+                reference: tag_name.to_string(),
+                commit: commit.to_string(),
+                kind: kind.into(),
+                is_current: commit == local,
+                known_bad: repo::is_bad_remote(commit),
+            });
+        }
+    }
+    // master 置顶，其余按 tag 名降序（版本号新者在前；tag 前缀 dsh-v + 定宽数字，
+    // 字典序即可近似版本序）
+    use std::cmp::Ordering;
+    entries.sort_by(|a, b| match (a.kind == "latest", b.kind == "latest") {
+        (true, false) => Ordering::Less,
+        (false, true) => Ordering::Greater,
+        _ => b.reference.cmp(&a.reference),
+    });
+    Ok(VersionsPayload {
+        local: local.clone(),
+        entries,
     })
 }
 
@@ -421,23 +494,72 @@ fn rollback_and_rebuild(app: &AppHandle, repo: &Path, base: &str, pnpm: &(String
     true
 }
 
+/// 目标版本字符串白名单：只允许 "master" 或形如 dsh-v1.2.3-alpha.1 的 tag 名。
+/// 防注入：拒绝空串、超长、路径穿越（..）、@、前导 -/ 等危险字符。
+fn is_safe_version_ref(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 80
+        && !s.starts_with('-')
+        && !s.starts_with('/')
+        && !s.contains("..")
+        && !s.contains('@')
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
+}
+
+/// 由 target 值决定要切到的 (本地分支名, 远端 ref)。
+/// - "master"：跟随官方主线，切/对齐到 origin/master；
+/// - 其余视为 tag 名：统一切到一个固定的 "dsh-selected" 分支（重复切换用 -B 覆盖，
+///   避免每次选择都新建分支越堆越多；也不用 detached HEAD——pull 等操作需要分支）。
+fn target_branch_spec(target: &str) -> (String, String) {
+    if target == "master" {
+        ("master".to_string(), "origin/master".to_string())
+    } else {
+        ("dsh-selected".to_string(), format!("refs/tags/{target}"))
+    }
+}
+
 /// Tauri 命令：执行完整更新流程。前端 invoke，事件驱动进度。
 /// force = true 时跳过"已是最新"短路，强制重新执行 install + build
 /// （用于构建曾被中断、产物与源码脱节的自救场景）。
+/// target = 用户显式选择的版本（"master"=跟随最新 / tag 名）；缺省同 master，
+/// 但显式指定时**跳过"已是最新"判断**——用户选它就是要切过去（含降级到旧稳定版）。
 #[tauri::command]
-pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<UpdateResultPayload, String> {
+pub(crate) async fn run_update(
+    app: AppHandle,
+    force: Option<bool>,
+    target: Option<String>,
+) -> Result<UpdateResultPayload, String> {
     let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
     let force = force.unwrap_or(false);
+    let chosen: Option<String> = match target {
+        Some(t) if t.trim().is_empty() => None,
+        Some(t) if !is_safe_version_ref(t.trim()) => return Err(format!("非法的版本目标: {t}")),
+        Some(t) => Some(t.trim().to_string()),
+        None => None,
+    };
+    let choosing = chosen.is_some();
 
-    // 先 fetch 对比：已是最新且非强制重建则直接返回，服务器原样在跑，应用不受影响
-    let (_local, remote, latest) = fetch_and_compare(&repo)?;
-    if latest && !force {
-        log("已是最新版本，跳过更新流程");
-        return Ok(UpdateResultPayload {
-            ok: true, failed_step: None, output_tail: None, already_latest: true,
-            prev_head: None, stashed_changes: false,
-            auto_rolled_back: false, rollback_rebuild_failed: false,
-        });
+    // 未显式选版本：先 fetch 对比，已是最新且非强制重建则直接返回（服务器原样在跑）
+    if !choosing {
+        let (_, _, latest) = fetch_and_compare(&repo)?;
+        if latest && !force {
+            log("已是最新版本，跳过更新流程");
+            return Ok(UpdateResultPayload {
+                ok: true, failed_step: None, output_tail: None, already_latest: true,
+                prev_head: None, stashed_changes: false,
+                auto_rolled_back: false, rollback_rebuild_failed: false,
+            });
+        }
+    } else {
+        // 显式选版本：fetch tags（确保目标对象在本地可 checkout），并做存在性校验
+        log(&format!("检查更新：git fetch origin --tags（目标 {}）", chosen.as_deref().unwrap()));
+        clear_stale_git_lock(&repo);
+        git_output(&repo, &["fetch", "origin", "--tags", "--force"])?;
+        let (_, spec) = target_branch_spec(chosen.as_deref().unwrap());
+        if git_output(&repo, &["rev-parse", "--verify", &spec]).is_err() {
+            return Err(format!("远端不存在所选版本: {}", chosen.as_deref().unwrap()));
+        }
     }
     if force {
         log("强制重建：跳过版本检查，直接执行构建流程");
@@ -450,7 +572,31 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
         "找不到 pnpm 或 corepack：请安装 Node.js（自带 corepack），或在终端运行 npm install -g pnpm",
     )?;
     log(&format!("pnpm 调用方式: {} {}", pnpm.0, pnpm.1.join(" ")));
-    let commands = update_commands(&pnpm);
+    // 组装步骤命令：显式选版本时第 0 步是「git checkout -B <branch> <ref>」
+    // （切到所选版本，含降级），否则保持默认的 git pull --ff-only 跟随 master。
+    // force（强制重建）从步骤 1 开始、绝不触碰源码版本——保持既有语义不变。
+    let base_commands = update_commands(&pnpm);
+    let commands: Vec<UpdateCommand> = if choosing {
+        let (branch, spec) = target_branch_spec(chosen.as_deref().unwrap());
+        let mut v = vec![(
+            "git".to_string(),
+            vec!["checkout".to_string(), "-B".to_string(), branch, spec],
+            &[] as StepEnvs,
+            false,
+        )];
+        v.extend(base_commands[1..].iter().cloned());
+        v
+    } else {
+        base_commands
+    };
+    // 步骤标签：显式选版本时第 0 步改称「切换版本」（前端步骤列表文本同步变化）
+    let labels: Vec<String> = if choosing {
+        let mut v = vec![format!("切换到所选版本 {}", chosen.as_deref().unwrap())];
+        v.extend(UPDATE_STEP_LABELS[1..].iter().map(|s| s.to_string()));
+        v
+    } else {
+        UPDATE_STEP_LABELS.iter().map(|s| s.to_string()).collect()
+    };
 
     // 更新前基线提交：pull 成功但后续步骤失败时，供「回滚到更新前」使用
     let prev_head = git_output(&repo, &["rev-parse", "HEAD"]).ok();
@@ -477,7 +623,7 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
     }
     while step < commands.len() {
         let (program, args, envs, tolerated) = &commands[step];
-        let (ok, output) = run_update_step(&app, &repo, step, UPDATE_STEP_LABELS[step], program, args, envs);
+        let (ok, output) = run_update_step(&app, &repo, step, &labels[step], program, args, envs);
         if ok {
             step += 1;
             continue;
@@ -486,17 +632,17 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
         if *tolerated {
             log(&format!(
                 "步骤[{}]失败但可容忍，继续下一步（失败输出尾部：{}）",
-                UPDATE_STEP_LABELS[step],
+                labels[step],
                 tail_chars(&output, 300)
             ));
             step += 1;
             continue;
         }
-        // git pull 遭遇临时网络故障：等几秒原样重试（最多 3 次）
+        // 第 0 步（git pull / git checkout）遭遇临时网络故障：等几秒原样重试（最多 3 次）
         if step == 0 && pull_retries < 3 && looks_like_network_error(&output) {
             pull_retries += 1;
             log(&format!(
-                "git pull 遭遇网络故障，{} 秒后重试（第 {}/3 次）：{}",
+                "第 0 步遭遇网络故障，{} 秒后重试（第 {}/3 次）：{}",
                 pull_retries * 5,
                 pull_retries,
                 tail_chars(&output, 200)
@@ -504,10 +650,10 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
             std::thread::sleep(std::time::Duration::from_secs(pull_retries as u64 * 5));
             continue;
         }
-        // git pull 被本地未提交改动阻止：自动 stash（含未跟踪文件）后重试一次。
-        // 不自动 pop——恢复时机由用户决定，避免与新代码冲突
+        // 第 0 步被本地未提交改动阻止（pull / checkout -B 都会因工作树改动失败）：
+        // 自动 stash（含未跟踪文件）后重试一次。不自动 pop——恢复时机由用户决定。
         if step == 0 && !stashed_changes && looks_like_local_change_conflict(&output) {
-            log("检测到本地未提交改动阻止 git pull，自动执行 git stash 暂存");
+            log("检测到本地未提交改动阻止版本切换，自动执行 git stash 暂存");
             match git_output(&repo, &["stash", "push", "--include-untracked", "-m", "dsh-shell auto-stash"]) {
                 Ok(_) => {
                     stashed_changes = true;
@@ -525,8 +671,13 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
             // 成功：不恢复服务器、不退出应用——壳页面保留更新结果，
             // 前端显示「重启服务」按钮，用户手动调用 restart_server 以新版启动
             log("更新完成（等待用户手动重启服务）");
-            // 该远端版本已验证可构建：从坏版本黑名单移除（上游可能已修复）
-            repo::clear_bad_remote(&remote);
+            // 本次更新的目标版本已验证可构建：从坏版本黑名单移除（成功即证其可构建，
+            // 无论走 pull 还是显式选版本——HEAD 此时就是刚构建成功的目标版本）
+            if let Ok(head) = git_output(&repo, &["rev-parse", "HEAD"]) {
+                if prev_head.as_ref().map(|p| p != &head).unwrap_or(true) {
+                    repo::clear_bad_remote(&head);
+                }
+            }
             Ok(UpdateResultPayload {
                 ok: true, failed_step: None, output_tail: None, already_latest: false,
                 prev_head: None, stashed_changes,
@@ -534,17 +685,22 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
             })
         }
         Some((step_index, output)) => {
-            // 构建步骤失败：常见于上游源码自身编译不过（导出缺失等）。
-            // 记入坏版本黑名单，之后检查更新时提前警告，避免反复更新到同一个坑。
-            if step_index + 1 == UPDATE_STEP_LABELS.len() && !remote.is_empty() {
-                log(&format!(
-                    "记录构建失败的远端版本 {}（后续检查更新将提示暂缓）",
-                    &remote[..7.min(remote.len())]
-                ));
-                repo::mark_bad_remote(&remote);
-            }
-            // HEAD 已前移（pull 成功、install/build 失败）→ 可回滚到更新前
+            // HEAD 已前移（pull/checkout 成功、install/build 失败）→ 可回滚到更新前
             let head_now = git_output(&repo, &["rev-parse", "HEAD"]).ok();
+            // 构建步骤失败：常见于上游源码自身编译不过（导出缺失等）。
+            // 只有 HEAD 真的切到了新版本才记黑名单（否则失败可能是本地问题），
+            // 之后检查更新时提前警告，避免反复更新到同一个坑。
+            if step_index + 1 == UPDATE_STEP_LABELS.len() {
+                if let Some(h) = &head_now {
+                    if prev_head.as_ref() != Some(h) {
+                        log(&format!(
+                            "记录构建失败的版本 {}（后续检查更新将提示暂缓）",
+                            &h[..7.min(h.len())]
+                        ));
+                        repo::mark_bad_remote(h);
+                    }
+                }
+            }
             let rollback_base = match (&prev_head, &head_now) {
                 (Some(a), Some(b)) if a != b => Some(a.clone()),
                 _ => None,
@@ -565,7 +721,7 @@ pub(crate) async fn run_update(app: AppHandle, force: Option<bool>) -> Result<Up
             restore_server(&app, &repo);
             Ok(UpdateResultPayload {
                 ok: false,
-                failed_step: Some(UPDATE_STEP_LABELS[step_index].to_string()),
+                failed_step: Some(labels[step_index].clone()),
                 output_tail: Some(tail_chars(&output, 1500)),
                 already_latest: false,
                 prev_head: rollback_base,

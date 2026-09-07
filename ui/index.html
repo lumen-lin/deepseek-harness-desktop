@@ -68,6 +68,9 @@
     .version-row code { font-family: ui-monospace, Consolas, monospace; font-size: 12.5px;
       padding: 3px 10px; border-radius: 6px; }
     .version-row .ver-arrow { opacity: .55; }
+    .version-row .ver-picker { flex: 1; min-width: 0; max-width: 340px; padding: 6px 8px; font-size: 12.5px;
+      border-radius: 7px; border: 1px solid transparent; outline: none; cursor: pointer;
+      font-family: ui-monospace, Consolas, monospace; }
     #update-view ol { list-style: none; margin: 0 0 4px; padding: 0; font-size: 13px; line-height: 1.6; display: none; }
     #update-view.show-steps ol { display: block; }
     #update-view li { position: relative; padding: 7px 0 7px 30px; }
@@ -157,6 +160,7 @@
       .update-card { background: #1b1e27; border: 1px solid #333846; }
       #update-view li::after { background: #333846; }
       .version-row code { background: #0d0f14; }
+      .version-row .ver-picker { background: #14161c; color: #d7dae0; border-color: #333846; }
       .log-toolbar input[type="text"] { background: #14161c; color: #d7dae0; border-color: #333846; }
       #log-pre { background: #0d0f14; color: #9aa2b4; }
     }
@@ -178,6 +182,7 @@
       .update-card { background: #ffffff; border: 1px solid #d8dce6; }
       #update-view li::after { background: #d8dce6; }
       .version-row code { background: #e9ecf4; }
+      .version-row .ver-picker { background: #ffffff; color: #3a3f4b; border-color: #c8cdd9; }
       .log-toolbar input[type="text"] { background: #ffffff; border-color: #d8dce6; }
       #log-pre { background: #e9ecf4; color: #5a6274; }
       .lg-err { color: #c23a2e; }
@@ -234,7 +239,7 @@
         <h1 id="update-title">正在检查更新…</h1>
         <div class="update-hint" id="update-hint"></div>
         <div class="version-row" id="version-row">
-          <code id="ver-local"></code><span class="ver-arrow">→</span><code id="ver-remote"></code>
+          <code id="ver-local"></code><span class="ver-arrow">→</span><select id="ver-picker" class="ver-picker" title="选择要更新的版本"></select>
         </div>
         <ol id="steps">
           <li data-status="pending" data-i18n="step.pull">拉取官方最新代码（git pull）</li>
@@ -339,8 +344,11 @@
         'about.fail': '版本信息读取失败：{err}',
         'unknown': '未知',
         'ph.checking.title': '正在检查更新…', 'ph.checking.hint': '对比本地与官方远端版本',
-        'ph.hasupdate.title': '发现新版本', 'ph.hasupdate.hint': '官方发布了新版本。更新将执行：拉取代码 → 安装依赖 → 清理旧产物 → 重新构建；完成后点击「重启服务」即可用新版本。',
-        'ph.latest.title': '已是最新版本', 'ph.latest.hint': '当前版本与官方远端一致。\n如上次构建曾被中断，可用「强制重建」重装并重建本地产物。',
+        'ph.hasupdate.title': '发现新版本', 'ph.hasupdate.hint': '官方发布了新版本，可在下方选择目标版本后更新（默认跟随 master 最新；标「测试版」的为 alpha 预发布版）。更新将执行：拉取代码 → 安装依赖 → 清理旧产物 → 重新构建；完成后点击「重启服务」即可生效。',
+        'ph.latest.title': '已是最新版本', 'ph.latest.hint': '当前版本与官方 master 一致。\n若官方最新版不稳定，可在下方选择其它版本（如历史稳定 tag）后点「开始更新」切换过去；「强制重建」可修复上次被中断的构建。',
+        'ver.master': '最新版（官方 master）', 'ver.alpha': '测试版', 'ver.rc': '候选版', 'ver.stable': '稳定版',
+        'ver.knownbad': '此前构建失败', 'ver.current': '（当前版本）',
+        'step.switch': '切换到所选版本 {ver}',
         'ph.running.title': '正在更新 DeepSeek Harness', 'ph.running.hint': '构建步骤可能需要几分钟，请勿关闭本窗口',
         'ph.runningForce.title': '正在重建 DeepSeek Harness',
         'ph.done.title': '更新完成', 'ph.done.hint': '本地服务器当前处于停止状态。\n点击「重启服务」以新版本启动，即可继续使用。',
@@ -381,8 +389,11 @@
         'about.fail': 'Failed to read version info: {err}',
         'unknown': 'unknown',
         'ph.checking.title': 'Checking for updates…', 'ph.checking.hint': 'Comparing local and remote versions',
-        'ph.hasupdate.title': 'New Version Available', 'ph.hasupdate.hint': 'A new version is available. Update will: pull code → install deps → clean stale output → rebuild. Click "Restart Server" when finished to use the new version.',
-        'ph.latest.title': 'Up to Date', 'ph.latest.hint': 'Current version matches the remote.\nIf a previous build was interrupted, use "Force Rebuild" to rebuild local artifacts.',
+        'ph.hasupdate.title': 'New Version Available', 'ph.hasupdate.hint': 'A new upstream version is available. Pick a target below then update (defaults to the latest master; entries marked "beta" are alpha pre-releases). Update will: pull/switch code → install deps → clean stale output → rebuild. Click "Restart Server" when finished.',
+        'ph.latest.title': 'Up to Date', 'ph.latest.hint': 'Current version matches upstream master.\nIf the latest master is unstable, pick another version below (e.g. a stable tag) and click "Start Update" to switch; "Force Rebuild" repairs interrupted builds.',
+        'ver.master': 'Latest (upstream master)', 'ver.alpha': 'Beta', 'ver.rc': 'Release Candidate', 'ver.stable': 'Stable',
+        'ver.knownbad': 'failed to build before', 'ver.current': '(current)',
+        'step.switch': 'Switch to selected version {ver}',
         'ph.running.title': 'Updating DeepSeek Harness', 'ph.running.hint': 'Building may take a few minutes. Do not close this window.',
         'ph.runningForce.title': 'Rebuilding DeepSeek Harness',
         'ph.done.title': 'Update Complete', 'ph.done.hint': 'The local server is currently stopped.\nClick "Restart Server" to launch the new version and continue.',
@@ -593,7 +604,7 @@
       const P = {
         checking:   { icon: 'spin', titleKey: 'ph.checking.title', hintKey: 'ph.checking.hint', steps: false, log: false, version: false, btns: ['back'] },
         hasupdate:  { icon: 'up', titleKey: 'ph.hasupdate.title', hintKey: 'ph.hasupdate.hint', steps: true, log: false, version: true, btns: ['back', 'start'] },
-        latest:     { icon: 'ok', titleKey: 'ph.latest.title', hintKey: 'ph.latest.hint', steps: false, log: false, version: false, btns: ['back', 'force'] },
+        latest:     { icon: 'ok', titleKey: 'ph.latest.title', hintKey: 'ph.latest.hint', steps: false, log: false, version: true, btns: ['back', 'force', 'start'] },
         running:    { icon: null, titleKey: 'ph.running.title', hintKey: 'ph.running.hint', steps: true, log: true, version: false, btns: [] },
         done:       { icon: 'ok', titleKey: 'ph.done.title', hintKey: 'ph.done.hint', steps: true, log: true, version: false, btns: ['restart'] },
         restarting: { icon: 'spin', titleKey: 'ph.restarting.title', hintKey: 'ph.restarting.hint', steps: true, log: true, version: false, btns: [] },
@@ -623,22 +634,55 @@
       showFrame()
     }
 
+    // 渲染版本下拉：master（跟随最新）+ 全部远端 dsh-* tags。
+    // 当前版本置灰（不可选"原地更新"），其余均可选（含向旧稳定版降级）。
+    const renderPicker = (entries) => {
+      const picker = $('ver-picker')
+      picker.replaceChildren()
+      for (const e of entries) {
+        const opt = document.createElement('option')
+        opt.value = e.reference
+        let badge = e.kind === 'latest' ? t('ver.master')
+          : e.kind === 'alpha' ? t('ver.alpha')
+          : e.kind === 'rc' ? t('ver.rc') : t('ver.stable')
+        if (e.known_bad) badge += ` · ${t('ver.knownbad')}`
+        opt.textContent = e.reference + `（${badge}）`
+        if (e.is_current) { opt.textContent += ` ${t('ver.current')}`; opt.disabled = true }
+        picker.appendChild(opt)
+      }
+      // 默认选中第一个未禁用项（排序后通常就是 master / 最新版）
+      for (const opt of picker.options) { if (!opt.disabled) { picker.selectedIndex = opt.index; break } }
+    }
+    // 当前选中版本此前是否构建失败过（用于警示文本）
+    const pickerBadHint = (entries) => {
+      const sel = $('ver-picker').selectedOptions[0]
+      if (!sel) return ''
+      const e = entries.find(x => x.reference === sel.value)
+      return (e && e.known_bad) ? t('warn.knownbad') : ''
+    }
     const runCheck = async () => {
       setPhase('checking')
       try {
-        const r = await invoke('check_update')
-        if (r.has_update) {
-          $('ver-local').textContent = r.local
-          $('ver-remote').textContent = r.remote
-          // 该远端版本此前构建失败过：提前警示，别让用户盲目跳进同一个坑
-          setPhase('hasupdate', r.known_bad ? t('warn.knownbad') : '')
-        } else {
-          setPhase('latest')
-        }
+        const p = await invoke('check_update')
+        window.__verEntries = p.entries
+        $('ver-local').textContent = p.local.slice(0, 7)
+        renderPicker(p.entries)
+        // 是否落后官方 master：是 → 有新版本；否 → 已最新（仍可主动切换其它版本）
+        const master = p.entries.find(e => e.kind === 'latest')
+        const hasUpdate = !!(master && master.commit !== p.local)
+        setPhase(hasUpdate ? 'hasupdate' : 'latest', pickerBadHint(p.entries))
       } catch (err) {
         setPhase('checkfail', `${err}`)
       }
     }
+    // 切换下拉选项时：若选到"此前构建失败"的版本，就地显示警示
+    $('ver-picker').addEventListener('change', () => {
+      const w = pickerBadHint(window.__verEntries || [])
+      $('update-error').textContent = w
+      $('update-error').style.display = w ? 'block' : 'none'
+      $('update-hint').textContent = ''
+      $('update-hint').style.display = 'none'
+    })
 
     // 点「检查并更新」：直接进入更新页并自动检查（只检查不执行，随时可返回）
     const openUpdatePage = () => {
@@ -649,20 +693,28 @@
       frame.style.display = 'none'
       $('update-view').style.display = 'flex'
       document.querySelectorAll('#steps li').forEach(li => li.dataset.status = 'pending')
+      // 第 1 步文案复位为默认（git pull）；选择具体版本更新时 startUpdate 会改它
+      document.querySelector('#steps li').textContent = t('step.pull')
       $('update-log').replaceChildren()
       updateLogFollow = true
       $('update-log-wrap').open = false
       runCheck()
     }
 
-    // 点「开始更新」/「强制重建」：真正执行更新流程
+    // 点「开始更新」/「强制重建」：真正执行更新流程。
+    // 非强制时携带下拉框选中的目标版本（master=跟随最新 / 具体 tag=切换过去）。
     const startUpdate = async (force = false) => {
       updateForceMode = force
       rollbackCommit = null
       titlebar.classList.add('updating')
       setPhase('running')
+      const target = force ? null : ($('ver-picker').value || null)
+      // 步骤标签联动：选中具体版本（非 master）时第 1 步文案改为「切换到所选版本」
+      const firstLi = document.querySelector('#steps li')
+      if (target && target !== 'master') firstLi.textContent = t('step.switch', { ver: target })
+      else firstLi.textContent = t('step.pull')
       try {
-        const result = await invoke('run_update', { force })
+        const result = await invoke('run_update', { force, target })
         if (result.already_latest) {
           // 极端情况：检查与执行之间远端状态变化
           setPhase('latest')
