@@ -167,14 +167,26 @@ pub(crate) struct VersionsPayload {
 
 /// Tauri 命令：只检查不执行——fetch（含 tags）并返回可选版本列表。
 /// 不触碰服务器，用户"只想看看有什么版本"的场景随时可安全返回。
+///
+/// `git fetch` 是网络阻塞调用（国内可能几十秒），用它包一层 spawn_blocking，
+/// 免得占着异步运行时的 worker 线程。
 #[tauri::command]
-pub(crate) async fn check_update() -> Result<VersionsPayload, String> {
+pub(crate) async fn check_update(token: String) -> Result<VersionsPayload, String> {
+    crate::commands::guard(&token)?;
+    tauri::async_runtime::spawn_blocking(check_update_blocking)
+        .await
+        .map_err(|e| format!("检查更新异常终止: {e}"))?
+}
+
+fn check_update_blocking() -> Result<VersionsPayload, String> {
     let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
     clear_stale_git_lock(&repo);
     log("检查更新：git fetch origin --tags");
     // --force：本地 tag 可能与上游移动/删除的旧引用冲突，强制对齐远端
     git_output(&repo, &["fetch", "origin", "--tags", "--force"])?;
     let local = git_output(&repo, &["rev-parse", "HEAD"])?;
+    // 黑名单读一次即可：下面要对 master + 每个 tag 判断，逐个读文件是几十次磁盘 IO
+    let bad = repo::bad_remotes();
 
     let mut entries: Vec<VersionEntry> = Vec::new();
     // master（官方最新主线，跟随自动更新）
@@ -185,7 +197,7 @@ pub(crate) async fn check_update() -> Result<VersionsPayload, String> {
                 commit: m.clone(),
                 kind: "latest".into(),
                 is_current: m == local,
-                known_bad: repo::is_bad_remote(&m),
+                known_bad: bad.contains(&m),
             });
         }
     }
@@ -224,7 +236,7 @@ pub(crate) async fn check_update() -> Result<VersionsPayload, String> {
                 commit: commit.to_string(),
                 kind: kind.into(),
                 is_current: commit == local,
-                known_bad: repo::is_bad_remote(commit),
+                known_bad: bad.contains(commit),
             });
         }
     }
@@ -452,7 +464,8 @@ fn tail_chars(s: &str, n: usize) -> String {
 fn restore_server(app: &AppHandle, repo: &Path) {
     // 防御性：确保旧进程已清理（正常流程上游已杀，此处兜底）
     kill_server(app);
-    match start_server(app, repo, DSH_PORT).or_else(|_| start_server(app, repo, 0)) {
+    // 端口回退（3080 被占用则改用随机端口）已收在 start_server 内部
+    match start_server(app, repo, DSH_PORT) {
         Ok(url) => {
             let _ = app.emit("server-restored", serde_json::json!({ "url": url }));
         }
@@ -507,16 +520,16 @@ fn is_safe_version_ref(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-' | '/'))
 }
 
-/// 由 target 值决定要切到的 (本地分支名, 远端 ref)。
-/// - "master"：跟随官方主线，切/对齐到 origin/master；
-/// - 其余视为 tag 名：统一切到一个固定的 "dsh-selected" 分支（重复切换用 -B 覆盖，
-///   避免每次选择都新建分支越堆越多；也不用 detached HEAD——pull 等操作需要分支）。
-fn target_branch_spec(target: &str) -> (String, String) {
-    if target == "master" {
-        ("master".to_string(), "origin/master".to_string())
-    } else {
-        ("dsh-selected".to_string(), format!("refs/tags/{target}"))
-    }
+/// 切换到指定 tag 时用的 (本地分支名, 远端 ref)。
+///
+/// 统一用固定的 "dsh-selected" 分支：重复切换用 -B 覆盖，避免每选一次就多一个
+/// 分支；也不用 detached HEAD，因为后续操作需要分支。
+///
+/// 这里**只处理 tag**。跟随 master 走的是 `git pull --ff-only`（见 run_update）——
+/// 那条路只做快进，不会覆盖本地分支上已提交的内容。早期版本对 master 也执行
+/// `checkout -B master origin/master`，那是强制重置，会把用户在本地的提交丢掉。
+fn target_branch_spec(tag: &str) -> (String, String) {
+    ("dsh-selected".to_string(), format!("refs/tags/{tag}"))
 }
 
 /// Tauri 命令：执行完整更新流程。前端 invoke，事件驱动进度。
@@ -526,6 +539,20 @@ fn target_branch_spec(target: &str) -> (String, String) {
 /// 但显式指定时**跳过"已是最新"判断**——用户选它就是要切过去（含降级到旧稳定版）。
 #[tauri::command]
 pub(crate) async fn run_update(
+    token: String,
+    app: AppHandle,
+    force: Option<bool>,
+    target: Option<String>,
+) -> Result<UpdateResultPayload, String> {
+    crate::commands::guard(&token)?;
+    // 整个流程是分钟级的阻塞操作（git + pnpm + 构建），
+    // 扔到阻塞线程池执行，别占着异步运行时的 worker。
+    tauri::async_runtime::spawn_blocking(move || run_update_blocking(app, force, target))
+        .await
+        .map_err(|e| format!("更新任务异常终止: {e}"))?
+}
+
+fn run_update_blocking(
     app: AppHandle,
     force: Option<bool>,
     target: Option<String>,
@@ -539,6 +566,11 @@ pub(crate) async fn run_update(
         None => None,
     };
     let choosing = chosen.is_some();
+    // 只有"切到具体 tag"才需要 checkout 覆盖分支；选 master（或未选）走快进 pull
+    let switch_to_tag: Option<String> = chosen
+        .as_deref()
+        .filter(|t| *t != "master")
+        .map(|t| t.to_string());
 
     // 未显式选版本：先 fetch 对比，已是最新且非强制重建则直接返回（服务器原样在跑）
     if !choosing {
@@ -553,12 +585,16 @@ pub(crate) async fn run_update(
         }
     } else {
         // 显式选版本：fetch tags（确保目标对象在本地可 checkout），并做存在性校验
-        log(&format!("检查更新：git fetch origin --tags（目标 {}）", chosen.as_deref().unwrap()));
+        let want = chosen.as_deref().unwrap();
+        log(&format!("检查更新：git fetch origin --tags（目标 {want}）"));
         clear_stale_git_lock(&repo);
         git_output(&repo, &["fetch", "origin", "--tags", "--force"])?;
-        let (_, spec) = target_branch_spec(chosen.as_deref().unwrap());
+        let spec = match switch_to_tag.as_deref() {
+            Some(tag) => format!("refs/tags/{tag}"),
+            None => "origin/master".to_string(),
+        };
         if git_output(&repo, &["rev-parse", "--verify", &spec]).is_err() {
-            return Err(format!("远端不存在所选版本: {}", chosen.as_deref().unwrap()));
+            return Err(format!("远端不存在所选版本: {want}"));
         }
     }
     if force {
@@ -572,12 +608,12 @@ pub(crate) async fn run_update(
         "找不到 pnpm 或 corepack：请安装 Node.js（自带 corepack），或在终端运行 npm install -g pnpm",
     )?;
     log(&format!("pnpm 调用方式: {} {}", pnpm.0, pnpm.1.join(" ")));
-    // 组装步骤命令：显式选版本时第 0 步是「git checkout -B <branch> <ref>」
-    // （切到所选版本，含降级），否则保持默认的 git pull --ff-only 跟随 master。
+    // 组装步骤命令：切 tag 时第 0 步是「git checkout -B dsh-selected refs/tags/<tag>」
+    // （切到所选版本，含降级），否则保持默认的 `git pull --ff-only` 跟随 master。
     // force（强制重建）从步骤 1 开始、绝不触碰源码版本——保持既有语义不变。
     let base_commands = update_commands(&pnpm);
-    let commands: Vec<UpdateCommand> = if choosing {
-        let (branch, spec) = target_branch_spec(chosen.as_deref().unwrap());
+    let commands: Vec<UpdateCommand> = if let Some(tag) = &switch_to_tag {
+        let (branch, spec) = target_branch_spec(tag);
         let mut v = vec![(
             "git".to_string(),
             vec!["checkout".to_string(), "-B".to_string(), branch, spec],
@@ -589,9 +625,9 @@ pub(crate) async fn run_update(
     } else {
         base_commands
     };
-    // 步骤标签：显式选版本时第 0 步改称「切换版本」（前端步骤列表文本同步变化）
-    let labels: Vec<String> = if choosing {
-        let mut v = vec![format!("切换到所选版本 {}", chosen.as_deref().unwrap())];
+    // 步骤标签：切 tag 时第 0 步改称「切换版本」（前端步骤列表文本同步变化）
+    let labels: Vec<String> = if let Some(tag) = &switch_to_tag {
+        let mut v = vec![format!("切换到所选版本 {tag}")];
         v.extend(UPDATE_STEP_LABELS[1..].iter().map(|s| s.to_string()));
         v
     } else {
@@ -737,7 +773,19 @@ pub(crate) async fn run_update(
 /// 杀服务器 → reset --hard 回基线提交 → 重新拉起服务器（旧产物继续服务）。
 /// 不自动 pop stash：本地改动是否恢复由用户自行决定，避免冲突。
 #[tauri::command]
-pub(crate) async fn rollback_update(app: AppHandle, commit: String) -> Result<(), String> {
+pub(crate) async fn rollback_update(
+    token: String,
+    app: AppHandle,
+    commit: String,
+) -> Result<(), String> {
+    crate::commands::guard(&token)?;
+    // reset + 重建同样是分钟级阻塞操作，放阻塞线程池
+    tauri::async_runtime::spawn_blocking(move || rollback_update_blocking(app, commit))
+        .await
+        .map_err(|e| format!("回滚任务异常终止: {e}"))?
+}
+
+fn rollback_update_blocking(app: AppHandle, commit: String) -> Result<(), String> {
     let commit = commit.trim().to_lowercase();
     if commit.len() < 7 || commit.len() > 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!("非法的提交哈希: {commit}"));
@@ -763,16 +811,24 @@ pub(crate) async fn rollback_update(app: AppHandle, commit: String) -> Result<()
 }
 
 /// Tauri 命令：手动重启 dsh web 服务器（更新成功后壳保持打开，由用户点击触发）。
-/// 固定端口优先，占用则回退随机端口；就绪后同步 ServerUrl 状态并广播
-/// server-restored（壳页面据此重新装载 iframe），URL 同时直接返回给调用方。
-/// async：同步命令在主线程执行，start_server 最长阻塞 60 秒会冻结窗口。
+/// 固定端口优先，占用则回退随机端口（回退逻辑在 start_server 内部）；
+/// 就绪后同步 ServerUrl 状态并广播 server-restored（壳页面据此重新装载 iframe），
+/// URL 同时直接返回给调用方。
+/// 走 spawn_blocking：start_server 最长可能要等 60 秒，不能占着异步 worker。
 #[tauri::command]
-pub(crate) async fn restart_server(app: AppHandle) -> Result<String, String> {
+pub(crate) async fn restart_server(token: String, app: AppHandle) -> Result<String, String> {
+    crate::commands::guard(&token)?;
+    tauri::async_runtime::spawn_blocking(move || restart_server_blocking(app))
+        .await
+        .map_err(|e| format!("重启服务异常终止: {e}"))?
+}
+
+fn restart_server_blocking(app: AppHandle) -> Result<String, String> {
     let repo = repo::locate_repo().ok_or("仓库位置不可用")?;
     log("手动重启 dsh web 服务器");
     // 先清理可能残留的旧服务器进程，避免双开
     kill_server(&app);
-    match start_server(&app, &repo, DSH_PORT).or_else(|_| start_server(&app, &repo, 0)) {
+    match start_server(&app, &repo, DSH_PORT) {
         Ok(url) => {
             if let Some(state) = app.try_state::<ServerUrl>() {
                 *state.0.lock().unwrap() = Some(url.clone());

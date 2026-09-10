@@ -88,25 +88,36 @@ Check & Update Harness
 
 
 
-The shell has a built-in "Check & Update Harness" (Help menu): it automatically runs `git pull` → `pnpm install` → `pnpm run build` to update the dsh core to the latest official version.
+The shell has a built-in "Check & Update Harness" (Help menu) that updates the dsh core to the latest official version, in four steps:
+
+1. Pull the latest code (`git pull`)
+2. Install dependencies (`pnpm install`)
+3. Clear stale build output (`pnpm run clean`)
+4. Rebuild (`pnpm run build`)
+
+The dropdown lets you choose a target version: it defaults to upstream `master` (a **fast-forward pull**, so commits you made locally are never overwritten), and you can also switch to a historical tag — including downgrading to an older stable release, which uses `git checkout -B dsh-selected <tag>`.
 
 
 
 <img width="2151" height="1344" alt="Update log" src="https://github.com/user-attachments/assets/f333d133-b4cb-4ae1-82b5-1661aa214d4d" />
 
 - **Success**: the shell window stays open — click "Restart Server" on the update page to launch the new version
-- **Failure**: the old server is restored automatically, and you can keep using it (full output in logs)
+- **Failure**: the old server is restored automatically, and you can keep using it (full output in logs). If the source had already moved to the new version but the build failed, the shell **rolls the source back and rebuilds**; versions that fail to build are blacklisted and flagged on the next check
+- **Force Rebuild**: for when a build was interrupted and the artifacts no longer match the source — it re-installs dependencies and rebuilds without touching the source version
 
 > Note: this updates the **dsh core**, not this shell. For shell updates, download the new installer from Releases.
 
 ## Building from source
 
 ```sh
-cd desktop-tauri/src-tauri
+cd src-tauri
 cargo tauri build
 ```
 
 Output goes to `target/release/bundle/nsis/`. Requires the Rust toolchain (edition 2024, rustc 1.85+).
+
+> The icon `src-tauri/icons/icon.ico` is generated from `256x256.png` by `gen_installer_assets.py`
+> (needs Python + Pillow). It is already committed, so day-to-day builds skip this script.
 
 ## FAQ
 
@@ -119,18 +130,35 @@ The shell searches upward from the exe location for the `deepseek-harness` direc
 ## Project structure
 
 ```
-desktop-tauri/
-├── src-tauri/          # Rust shell (modular)
+.
+├── src-tauri/             # Rust shell (modular)
 │   ├── src/
-│   │   ├── main.rs     # Entry: window, repo location, event routing
-│   │   ├── commands.rs # Tauri commands (version/open dir/quit, etc.)
-│   │   ├── server.rs   # dsh web subprocess startup & readiness
-│   │   ├── update.rs   # Auto-update flow (git pull + pnpm + build)
-│   │   ├── theme.rs    # Theme following (settings.yaml watcher)
-│   │   ├── locale.rs   # Language following (settings.yaml watcher)
-│   │   ├── logging.rs  # Logging
-│   │   └── repo.rs     # Repository locating
-│   ├── tauri.conf.json # Bundling config
-│   └── capabilities/   # Minimal permission config
-└── ui/index.html       # Shell page (custom title bar + loading page + iframe, bilingual)
+│   │   ├── main.rs        # Entry: window, repo location, event routing
+│   │   ├── commands.rs    # Tauri commands (version/open dir/quit…; all check the call token)
+│   │   ├── server.rs      # dsh web subprocess startup, readiness, port fallback
+│   │   ├── shell.rs       # Local HTTP server for the shell page (same-site hosting + call token)
+│   │   ├── nav.rs         # Navigation allow-list: main window may only stay on our own ports
+│   │   ├── update.rs      # Auto-update flow (pull/switch + pnpm install/clean/build)
+│   │   ├── theme.rs       # Theme following (settings.yaml watcher)
+│   │   ├── locale.rs      # Language following (settings.yaml watcher)
+│   │   ├── logging.rs     # Logging
+│   │   ├── paths.rs       # App base dir / home / dsh config dir
+│   │   └── repo.rs        # Repository locating & shell data dir
+│   ├── tauri.conf.json    # Bundling config
+│   └── capabilities/      # Permission config (ACL is only the first layer — see src/shell.rs)
+├── windows/installer.nsi  # NSIS script (Tauri upstream template + small customizations)
+└── ui/index.html          # Shell page (custom title bar + loading page + iframe, bilingual)
 ```
+
+## Security boundaries (the short version)
+
+The shell page is served from `127.0.0.1`, while Tauri's ACL can only authorize by
+source host:port — it cannot tell the shell page apart from another same-origin page
+served by any other local process. Two real boundaries make up for that:
+
+1. **Call token** — the shell page URL carries a random `?k=`; every custom command verifies it,
+   and the token is only handed out together with the shell page on its secret path;
+2. **Navigation allow-list** (`nav.rs`) — the main window may only stay on ports started by this
+   process; anything else is handed to the system browser.
+
+Read the header comments in `src/shell.rs` and `src/nav.rs` before touching this area.

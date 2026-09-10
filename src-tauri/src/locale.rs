@@ -111,6 +111,7 @@ pub(crate) fn current_locale() -> String {
 
 /// Tauri 命令：供壳页面初始化时查询当前语言（webview 刷新后事件已错过）。
 #[tauri::command]
-pub(crate) fn get_locale() -> String {
-    read_locale_preference()
+pub(crate) fn get_locale(token: String) -> Result<String, String> {
+    crate::commands::guard(&token)?;
+    Ok(read_locale_preference())
 }

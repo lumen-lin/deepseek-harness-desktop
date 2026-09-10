@@ -1,5 +1,6 @@
 //! deepseek-harness 仓库定位与壳自身数据目录。
 
+use std::collections::HashSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -10,7 +11,8 @@ pub(crate) fn is_repo_root(p: &Path) -> bool {
     p.join("apps").join("cli").join("package.json").is_file()
 }
 
-/// 数据目录：配置（仓库位置）、pid 文件等。开发模式在 desktop-tauri\data，打包后在 exe 旁 data。
+/// 数据目录：配置（仓库位置）、窗口状态、pid 文件、日志等。
+/// 开发模式在 `src-tauri\data`，打包后在 exe 旁的 `data`（见 `paths::app_base_dir`）。
 pub(crate) fn data_dir() -> PathBuf {
     paths::app_base_dir().join("data")
 }
@@ -89,13 +91,16 @@ pub(crate) fn mark_bad_remote(commit: &str) {
     }
 }
 
-/// 该 commit 是否曾被记录为"构建失败"。
-pub(crate) fn is_bad_remote(commit: &str) -> bool {
+/// 一次读出全部"构建失败"的 commit 集合。
+///
+/// check_update 要对 master + 每个 tag 各判断一遍，若逐个调用会把同一个
+/// config.json 读上几十次；这里读一次，交给调用方在内存里查。
+pub(crate) fn bad_remotes() -> HashSet<String> {
     read_config()
         .get("badRemoteCommits")
         .and_then(|v| v.as_array())
-        .map(|a| a.iter().filter_map(|v| v.as_str()).any(|c| c == commit))
-        .unwrap_or(false)
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
 }
 
 /// 该 commit 已验证可构建：从黑名单移除（例如上游修复后重新发布）。
@@ -129,7 +134,8 @@ pub(crate) fn locate_repo() -> Option<PathBuf> {
     }
     let exe = std::env::current_exe().ok()?;
     let mut dir = exe.parent()?.to_path_buf();
-    // 开发模式：target\debug → 向上到 desktop-tauri 再到根；打包模式：exe 所在目录逐级向上
+    // 开发模式：target\debug → 向上回到仓库根；打包模式：从 exe 所在目录逐级向上。
+    // 每一级都看它下面有没有名为 deepseek-harness 的目录。
     for _ in 0..5 {
         let candidate = dir.join("deepseek-harness");
         if is_repo_root(&candidate) {

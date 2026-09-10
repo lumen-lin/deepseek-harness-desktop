@@ -17,11 +17,37 @@
 //! 所以壳页面（`http://127.0.0.1:<壳端口>`）与 dsh（`http://127.0.0.1:3080`）
 //! 互为同站，iframe 里的 cookie 就正常生效了。官方用系统浏览器打开时能用，
 //! 正是因为那时是顶层导航。
+//!
+//! ## 调用令牌（token）
+//!
+//! 壳页面跑在 127.0.0.1 上，而 Tauri 的 ACL 只能按「来源 host:port」授权，
+//! 无法区分同一 host 下的不同页面——只要来源是 127.0.0.1，任何页面都符合
+//! capability 里 `http://127.0.0.1:*/*` 的条件。因此权限边界不能只靠 ACL：
+//! 壳页面 URL 里带一枚随机 token（`?k=<secret>`），所有自定义命令都要求
+//! 调用方带上它，Rust 侧校验后才执行。token 只随「秘密路径」下的壳页面下发，
+//! 本机其它进程即便猜到端口也拿不到壳页面 HTML，自然拿不到 token。
+//! 配合 `nav.rs` 的端口白名单，构成两道独立的边界。
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::OnceLock;
 
 use crate::logging::log;
+use crate::nav;
+
+/// 本进程的调用令牌：壳页面从 URL 的 `?k=` 取，自定义命令调用时回传。
+static TOKEN: OnceLock<String> = OnceLock::new();
+
+/// 校验壳命令调用凭证。token 未初始化（服务站还没起来）时一律拒绝。
+pub(crate) fn token_matches(candidate: &str) -> bool {
+    match TOKEN.get() {
+        Some(expected) => {
+            // 长度先比一遍再比内容，避免明显不匹配时的逐字节比较（本地场景足够）
+            expected.len() == candidate.len() && expected == candidate
+        }
+        None => false,
+    }
+}
 
 /// 壳页面（单文件，CSS/JS 全内联），编译期内嵌，运行期不读磁盘。
 const SHELL_HTML: &str = include_str!("../../ui/index.html");
@@ -97,7 +123,10 @@ fn serve(mut stream: TcpStream, secret_path: String) {
 
 /// 启动只服务于壳页面的本地 HTTP 服务站（绑定 127.0.0.1，端口由系统分配）。
 ///
-/// @returns 主窗口应加载的壳页面 URL（`http://127.0.0.1:<port>/<secret>/index.html`）。
+/// 返回主窗口应加载的 URL
+/// （`http://127.0.0.1:<port>/<secret>/index.html?k=<secret>`）。
+/// 端口在这里就登记进导航白名单了，不必外传。
+/// 注意日志里**不打印** secret：它就是调用令牌，落到日志文件等于泄露。
 pub(crate) fn start_shell_server() -> Result<String, String> {
     let listener =
         TcpListener::bind(("127.0.0.1", 0)).map_err(|e| format!("无法启动壳页面服务站: {e}"))?;
@@ -108,7 +137,11 @@ pub(crate) fn start_shell_server() -> Result<String, String> {
 
     let secret = random_secret();
     let secret_path = format!("/{secret}/index.html");
-    let url = format!("http://127.0.0.1:{port}{secret_path}");
+    let url = format!("http://127.0.0.1:{port}{secret_path}?k={secret}");
+    // 令牌先落地再启用窗口：命令校验一律以这里的值为准
+    let _ = TOKEN.set(secret);
+    // 壳页面端口登记进导航白名单（否则主窗口首次导航就被自己拦下）
+    nav::allow_port(port);
 
     std::thread::spawn(move || {
         for incoming in listener.incoming() {

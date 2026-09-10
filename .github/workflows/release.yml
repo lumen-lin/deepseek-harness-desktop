@@ -6,11 +6,29 @@ on:
     tags: ["v*"]
   workflow_dispatch: # 也可以在 Actions 页面手动点击触发
 
+# 显式声明写权限：tauri-action 需要创建 Release 与上传资产。
+# 新仓库的 GITHUB_TOKEN 默认只读，不写死这一行会依赖仓库级设置，换个仓库就 403。
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest # Windows 云电脑（NSIS 安装包只能在 Windows 上打包）
     steps:
       - uses: actions/checkout@v4 # 拉取仓库源码
+      # tauri-action 用 Cargo.toml 的版本生成 tagName（v__VERSION__）与 Release 名，
+      # 若 push 上来的 tag 与之不一致，会凭空多出一个 tag 和 Release，事后很难收拾。
+      - name: 校验 tag 与 Cargo.toml 版本一致
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER=$(grep -m1 '^version' src-tauri/Cargo.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          echo "tag = $TAG / Cargo.toml = $VER"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::tag v$TAG 与 src-tauri/Cargo.toml 的版本 $VER 不一致"
+            exit 1
+          fi
       - uses: actions/setup-node@v4 # 安装 Node.js
         with:
           node-version: 22

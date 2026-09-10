@@ -1,13 +1,19 @@
 // DeepSeek Harness 桌面端（Tauri 壳）。
-// 职责与 Electron 版一致：定位 deepseek-harness 仓库 → 启动 `dsh web --port 0`
-// → 解析官方就绪信号 `dsh web: http://127.0.0.1:<port>` → 窗口加载该地址。
-// 仓库更新（git fetch 对比 → pull + pnpm build）后在更新页点击「重启服务」即可。
+// 职责：定位 deepseek-harness 仓库 → 启动 `dsh web` → 解析官方就绪信号
+// `dsh web: http://127.0.0.1:<port>` → 窗口加载该地址。
+// 仓库更新（git pull/切版本 → pnpm install + clean + build）后在更新页
+// 点击「重启服务」即可生效。
+//
+// 两个安全边界（都由本文件串起来，细节见各自模块）：
+// 1. `nav` —— 主窗口只允许停在「本进程自己起的服务端口」上；
+// 2. `shell` 的调用令牌 —— 所有壳命令都要求调用方带令牌，挡住同源页面。
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
 mod locale;
 mod logging;
+mod nav;
 mod paths;
 mod repo;
 mod server;
@@ -23,30 +29,6 @@ use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{window::Color, Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
-
-/// 判断 webview 是否允许导航到该 URL：精确匹配 host，避免 starts_with
-/// 把 `127.0.0.1.evil.com` 误判为本地地址。
-fn is_allowed_navigation(s: &str) -> bool {
-    if s.starts_with("tauri://") || s.starts_with("about:") {
-        return true;
-    }
-    let after_scheme = match s.strip_prefix("http://").or_else(|| s.strip_prefix("https://")) {
-        Some(r) => r,
-        None => return false,
-    };
-    // authority = host[:port]，取第一个 '/' 之前的部分
-    let authority = after_scheme.split('/').next().unwrap_or(after_scheme);
-    // 提取 host：IPv6 写法 [::1]:3080 取方括号内；普通 host:port 取冒号前
-    let host = if let Some(end) = authority.find(']') {
-        &authority[1..end]
-    } else {
-        authority.rsplit_once(':').map(|(h, _)| h).unwrap_or(authority)
-    };
-    matches!(
-        host,
-        "127.0.0.1" | "localhost" | "dsh.internal" | "tauri.localhost" | "::1"
-    )
-}
 
 fn main() {
     // panic 钩子：release 是 panic=abort，进程瞬间消失且无任何界面反馈；
@@ -78,7 +60,6 @@ fn main() {
                 let _ = win.set_focus();
             }
         }))
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         // 帧守卫脚本必须注入所有 frame：js_init_script 只进主 frame，dsh 页面
@@ -115,8 +96,8 @@ fn main() {
             // 上下文，cookie 既不落地也不回传，首页与 /api 全部 401。
             // 两者同处 127.0.0.1（SameSite 只看 host 不看端口）即可同站。
             // 详见 src/shell.rs 顶部说明。
-            let shell_page = shell::start_shell_server()?;
-            let shell_page: tauri::Url = match shell_page.parse() {
+            let shell_page_src = shell::start_shell_server()?;
+            let shell_page: tauri::Url = match shell_page_src.parse() {
                 Ok(u) => u,
                 Err(e) => return Err(format!("壳页面 URL 非法: {e}").into()),
             };
@@ -125,8 +106,8 @@ fn main() {
             // on_navigation 两个 handler，它们只存在于 Builder 上。
             // - on_new_window：iframe 里 target=_blank / window.open 的链接
             //   （如插件市场的源码/更新说明链接）→ 转交系统默认浏览器
-            // - on_navigation：主 frame 只允许壳页面与本地 dsh，外部地址同样
-            //   转浏览器（返回 false 阻止 webview 自己导航）
+            // - on_navigation：只放行本进程自己的服务端口（nav 模块），
+            //   其余地址一律转浏览器并阻止 webview 自己导航
             let main = tauri::WebviewWindowBuilder::new(
                 &handle,
                 "main",
@@ -156,8 +137,9 @@ fn main() {
             })
             .on_navigation(|url| {
                 let s = url.as_str();
-                let local = is_allowed_navigation(s);
+                let local = nav::is_allowed(s);
                 if !local {
+                    log(&format!("拦截非本地导航，转系统浏览器: {s}"));
                     let _ = tauri_plugin_opener::open_url(s, None::<String>);
                 }
                 local
@@ -183,78 +165,8 @@ fn main() {
             }
             log("窗口已显示（服务器后台启动中）");
 
-            // 仓库定位：自动失败则弹目录选择框
-            let repo = match repo::locate_repo() {
-                Some(r) => r,
-                None => {
-                    log("未自动找到仓库，等待用户选择");
-                    let picked = app.dialog().file().blocking_pick_folder();
-                    match picked {
-                        Some(path) => {
-                            let p = PathBuf::from(path.to_string());
-                            if !repo::is_repo_root(&p) {
-                                return Err(format!("所选目录不是有效的 deepseek-harness 仓库（缺少 apps\\cli\\package.json）: {}", p.display()).into());
-                            }
-                            p
-                        }
-                        None => {
-                            app.handle().exit(0);
-                            return Ok(());
-                        }
-                    }
-                }
-            };
-            log(&format!("仓库目录: {}", repo.display()));
-            repo::write_repo_config(&repo);
-
-            // 服务器启动放后台线程：setup 立即返回，主线程事件循环保持运转，
-            // 加载页（转圈动画）即时渲染——若在 setup 里阻塞等服务器，窗口
-            // 会冻结成白框直到就绪，主观上"启动慢"正是这么来的。
-            // 错误弹窗用 blocking API，官方要求在非主线程调用，本线程正合适。
-            {
-                let handle = handle.clone();
-                std::thread::spawn(move || {
-                    // 先清理上次异常退出（崩溃/被强杀）可能遗留的服务器进程
-                    server::cleanup_stale_server();
-
-                    let url = match server::start_server(&handle, &repo, server::DSH_PORT) {
-                        Ok(u) => u,
-                        Err(e) if e.contains("EADDRINUSE") => {
-                            log(&format!("固定端口 {} 被占用，回退随机端口: {e}", server::DSH_PORT));
-                            match server::start_server(&handle, &repo, 0) {
-                                Ok(u) => u,
-                                Err(e2) => {
-                                    log(&format!("启动失败: {e2}"));
-                                    let _ = handle.dialog()
-                                        .message(format!("DeepSeek Harness 启动失败\n\n{e2}"))
-                                        .kind(MessageDialogKind::Error)
-                                        .blocking_show();
-                                    handle.exit(1);
-                                    return;
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            log(&format!("启动失败: {e}"));
-                            let _ = handle.dialog()
-                                .message(format!("DeepSeek Harness 启动失败\n\n{e}"))
-                                .kind(MessageDialogKind::Error)
-                                .blocking_show();
-                            handle.exit(1);
-                            return;
-                        }
-                    };
-
-                    // 记录就绪 URL（webview 刷新后壳页面经 shell_state 恢复），
-                    // 再通知壳页面装载 iframe
-                    if let Some(state) = handle.try_state::<server::ServerUrl>() {
-                        *state.0.lock().unwrap() = Some(url.clone());
-                    }
-                    let _ = handle.emit("server-ready", server::ServerReadyPayload { url });
-                });
-            }
-
-            // 服务器存活监控：意外退出时通知壳页面显示断线页
+            // 服务器存活监控：意外退出时通知壳页面显示断线页。
+            // 与仓库定位无关，先起来，等 start_backend 把子进程登记进 ServerProc。
             server::spawn_health_watcher(handle.clone());
 
             // 主题跟随：监听 settings.yaml 变化
@@ -354,8 +266,88 @@ fn main() {
                 log("系统托盘已创建（点 X 隐藏到托盘）");
             }
 
+            // 仓库定位：自动失败则弹目录选择框（非阻塞，见函数注释）
+            match repo::locate_repo() {
+                Some(r) => start_backend(handle.clone(), r),
+                None => pick_repo_then_start(app, handle.clone()),
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+/// 仓库就绪后拉起后端：写配置 → 后台线程启动 dsh web → 广播就绪事件。
+///
+/// 服务器启动放后台线程：setup 立即返回，主线程事件循环保持运转，加载页
+/// （转圈动画）即时渲染——若在 setup 里阻塞等服务器，窗口会冻结成白框直到
+/// 就绪，主观上"启动慢"正是这么来的。错误弹窗用 blocking API，官方要求
+/// 在非主线程调用，本线程正合适。
+fn start_backend(handle: tauri::AppHandle, repo: PathBuf) {
+    log(&format!("仓库目录: {}", repo.display()));
+    repo::write_repo_config(&repo);
+
+    std::thread::spawn(move || {
+        // 先清理上次异常退出（崩溃/被强杀）可能遗留的服务器进程
+        server::cleanup_stale_server();
+
+        // 端口被占用时的随机端口回退已经收在 start_server 内部，
+        // 这里不必再判断错误文本里有没有 EADDRINUSE
+        let url = match server::start_server(&handle, &repo, server::DSH_PORT) {
+            Ok(u) => u,
+            Err(e) => {
+                log(&format!("启动失败: {e}"));
+                let _ = handle.dialog()
+                    .message(format!("DeepSeek Harness 启动失败\n\n{e}"))
+                    .kind(MessageDialogKind::Error)
+                    .blocking_show();
+                handle.exit(1);
+                return;
+            }
+        };
+
+        // 记录就绪 URL（webview 刷新后壳页面经 shell_state 恢复），
+        // 再通知壳页面装载 iframe
+        if let Some(state) = handle.try_state::<server::ServerUrl>() {
+            *state.0.lock().unwrap() = Some(url.clone());
+        }
+        let _ = handle.emit("server-ready", server::ServerReadyPayload { url });
+    });
+}
+
+/// 自动定位仓库失败时，弹目录选择框让用户指定，选完再拉起后端。
+///
+/// 必须用**非阻塞**的 `pick_folder`：`blocking_pick_folder` 官方文档明确要求
+/// 不能在主线程调用（setup 回调就跑在主线程），阻塞事件循环会让对话框不响应
+/// 甚至死锁——而这恰恰是新用户第一次安装最可能走到的分支。
+/// 所以把"选完目录之后要做什么"整个塞进回调里。
+fn pick_repo_then_start(app: &tauri::App, handle: tauri::AppHandle) {
+    log("未自动找到仓库，等待用户选择");
+    let h = handle.clone();
+    app.dialog()
+        .file()
+        .set_title("请选择 deepseek-harness 仓库根目录")
+        .pick_folder(move |picked| match picked {
+            Some(path) => {
+                let p = PathBuf::from(path.to_string());
+                if repo::is_repo_root(&p) {
+                    start_backend(h.clone(), p);
+                } else {
+                    log(&format!("所选目录不是有效的仓库（缺少 apps\\cli\\package.json）: {}", p.display()));
+                    let h2 = h.clone();
+                    let _ = h.dialog()
+                        .message(format!(
+                            "所选目录不是有效的 deepseek-harness 仓库。\n\n需要包含 apps\\cli\\package.json：\n{}",
+                            p.display()
+                        ))
+                        .kind(MessageDialogKind::Error)
+                        .show(move |_| h2.exit(1));
+                }
+            }
+            None => {
+                log("用户取消了仓库选择，退出应用");
+                h.exit(0);
+            }
+        });
 }

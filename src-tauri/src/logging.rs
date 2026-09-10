@@ -6,8 +6,8 @@ use std::path::PathBuf;
 /// 单文件超过 1MB 时轮转为 desktop.log.1（更早的丢弃）。
 const MAX_LOG_BYTES: u64 = 1_000_000;
 
-/// 日志目录：exe 旁 logs\（打包后无法看 stdout）。
-/// 开发模式在 target\debug|release 下，向上回到 desktop-tauri；打包模式用 exe 所在目录。
+/// 日志目录：exe 旁 logs\（打包后看不到 stdout）。
+/// 开发模式向上回到项目根；打包模式用 exe 所在目录。
 pub(crate) fn log_dir() -> PathBuf {
     let dir = crate::paths::app_base_dir().join("logs");
     let _ = fs::create_dir_all(&dir);

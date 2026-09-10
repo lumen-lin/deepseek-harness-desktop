@@ -3,12 +3,19 @@
 use std::path::PathBuf;
 
 /// 应用基目录：打包后为 exe 所在目录，开发模式从 target/debug|release 向上回到项目根。
+///
+/// 开发模式用 `cfg!(debug_assertions)` 判定，而不是看目录名是否叫
+/// debug/release——后者在用户恰好把 exe 装在 `D:\apps\release\` 这类目录时
+/// 会误判，把日志与配置写到上三级目录去。
 pub(crate) fn app_base_dir() -> PathBuf {
     if let Ok(exe) = std::env::current_exe() {
         let mut d = exe.parent().map(PathBuf::from).unwrap_or_default();
-        if d.ends_with("debug") || d.ends_with("release") {
+        if cfg!(debug_assertions) {
+            // target/debug/<exe> 或 target/release/<exe> → 上三级回到项目根
             for _ in 0..3 {
-                d.pop();
+                if !d.pop() {
+                    break;
+                }
             }
         }
         d

@@ -413,12 +413,10 @@ Var AppStartMenuFolder
 ;!define MUI_FINISHPAGE_SHOWREADME_FUNCTION CreateOrUpdateDesktopShortcut
 ;!define MUI_FINISHPAGE_RUN
 ;!define MUI_FINISHPAGE_RUN_FUNCTION RunMainBinary
+; 注：上面几行连同 RunMainBinary 函数一起删掉了——完成页不再有勾选框，
+; 就没有任何地方调用它，留着只是模板升级时对不上号的死代码。
 !define MUI_PAGE_CUSTOMFUNCTION_PRE SkipIfPassive
 !insertmacro MUI_PAGE_FINISH
-
-Function RunMainBinary
-  nsis_tauri_utils::RunAsUser "$INSTDIR\${MAINBINARYNAME}.exe" ""
-FunctionEnd
 
 ; Uninstaller Pages
 ; 1. Confirm uninstall page
@@ -877,6 +875,14 @@ Section Uninstall
     SetShellVarContext current
     RmDir /r "$APPDATA\${BUNDLEID}"
     RmDir /r "$LOCALAPPDATA\${BUNDLEID}"
+
+    ; 本壳的运行时数据放在 exe 旁，不在 $APPDATA\$BUNDLEID：
+    ;   data\  = config.json（仓库位置、坏版本黑名单）、window.json、server.pid
+    ;   logs\  = desktop.log
+    ; 只删 BUNDLEID 目录的话，用户勾了"删除应用数据"却什么也没删掉，
+    ; 而且上面那句 RMDir "$INSTDIR"（非递归）也会因为目录非空而静默失败。
+    RmDir /r "$INSTDIR\data"
+    RmDir /r "$INSTDIR\logs"
   ${EndIf}
 
   !ifmacrodef NSIS_HOOK_POSTUNINSTALL
