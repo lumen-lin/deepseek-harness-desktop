@@ -294,7 +294,7 @@ fn start_backend(handle: tauri::AppHandle, repo: PathBuf) {
 
         // 端口被占用时的随机端口回退已经收在 start_server 内部，
         // 这里不必再判断错误文本里有没有 EADDRINUSE
-        let url = match server::start_server(&handle, &repo, server::DSH_PORT) {
+        let url = match server::start_server(&handle, &repo, server::preferred_port()) {
             Ok(u) => u,
             Err(e) => {
                 log(&format!("启动失败: {e}"));

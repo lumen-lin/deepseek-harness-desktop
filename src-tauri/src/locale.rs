@@ -12,7 +12,8 @@ use crate::logging::log;
 use crate::paths;
 
 fn settings_path() -> PathBuf {
-    paths::dsh_home().join("settings.yaml")
+    // 路径只在 paths 里定义一次，避免与 theme.rs 各写一份
+    paths::dsh_settings_path()
 }
 
 /// 读 locale.preference（zh/en 等），失败或未知回 zh（保持壳默认中文，

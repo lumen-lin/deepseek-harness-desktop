@@ -16,13 +16,37 @@ use crate::logging::log;
 use crate::nav;
 use crate::repo;
 
-/// 官方就绪信号行的前缀（与 Electron 版一致）。
-const URL_LINE: &str = "dsh web: http://127.0.0.1:";
-/// 就绪等待上限（秒）。注意这是**总**时长，不是"每条输出之间的静默时长"。
-const START_TIMEOUT_SECS: u64 = 60;
-/// 服务器端口：与官方 `dsh web` 默认端口一致（未传 --port 时 dsh 也用 3080）。
-/// 被占用时自动回退随机端口（比如终端里已手动开着 dsh web）。
-pub(crate) const DSH_PORT: u16 = 3080;
+/// 就绪等待上限（秒，默认值）。注意这是**总**时长，不是"每条输出之间的静默时长"。
+/// 慢机器上首次冷启动（tsx 现场编译）可能更久，可用环境变量 `DSH_START_TIMEOUT` 覆盖。
+const DEFAULT_START_TIMEOUT_SECS: u64 = 60;
+/// 服务器端口默认值：与官方 `dsh web` 一致（不传 --port 时 dsh 也用 3080）。
+/// 被占用时自动回退随机端口（比如终端里已经手动开着 dsh web）。
+/// 可用环境变量 `DSH_PORT` 覆盖。
+const DEFAULT_DSH_PORT: u16 = 3080;
+
+/// 首选端口：环境变量优先，其次默认值。
+/// 端口属于"跟部署环境相关"的东西，不该写死在代码里 —— 用户如果在别处固定了端口，壳要能跟着走。
+pub(crate) fn preferred_port() -> u16 {
+    read_env_u16("DSH_PORT").unwrap_or(DEFAULT_DSH_PORT)
+}
+
+/// 就绪等待上限（秒）：环境变量优先，其次默认值。
+fn start_timeout_secs() -> u64 {
+    read_env_u64("DSH_START_TIMEOUT")
+        .filter(|v| *v > 0)
+        .unwrap_or(DEFAULT_START_TIMEOUT_SECS)
+}
+
+/// 读环境变量为 u64（缺失 / 空白 / 非法一律 None）。
+fn read_env_u64(name: &str) -> Option<u64> {
+    std::env::var(name).ok()?.trim().parse().ok()
+}
+
+/// 读环境变量为 u16（0 视为非法，免得把"端口 0"当成用户意图）。
+fn read_env_u16(name: &str) -> Option<u16> {
+    let v = read_env_u64(name)?;
+    u16::try_from(v).ok().filter(|p| *p > 0)
+}
 
 /// 全局可变状态：服务器子进程句柄（用于退出时杀进程树）。
 pub(crate) struct ServerProc(pub Mutex<Option<Child>>);
@@ -53,21 +77,45 @@ pub(crate) fn creation_flags_windows(cmd: &mut Command) -> &mut Command {
     }
 }
 
-/// 解析 dsh 启动命令：优先构建产物 lib\bin.js，回退源码 tsx 模式。port 0 = OS 随机分配。
-/// --no-open：官方 d66841ea 起 dsh web 就绪后默认用系统浏览器打开页面；
+/// dsh CLI 入口候选（按优先级尝试）及各自的启动方式。
+///
+/// 做成一张表而不是写死一条 `if` 链：上游若调整目录结构，往这里加一行即可，
+/// 不必再动函数体；报错信息也会把尝试过的路径全列出来，便于定位。
+struct CliEntry {
+    /// 相对仓库根的入口路径
+    rel: &'static str,
+    /// .ts 源码入口需要先加载 tsx 运行时
+    needs_tsx: bool,
+}
+
+const CLI_ENTRIES: &[CliEntry] = &[
+    // 正常路径：pnpm run build 之后的产物
+    CliEntry { rel: "apps/cli/lib/bin.js", needs_tsx: false },
+    // 兜底：尚未构建时直接跑源码（要求仓库里已安装 tsx）
+    CliEntry { rel: "apps/cli/src/bin.ts", needs_tsx: true },
+];
+
+/// 组装 dsh 启动命令。port 0 = 交给 OS 随机分配。
+///
+/// `--no-open`：官方 d66841ea 起 dsh web 就绪后会默认用系统浏览器打开页面；
 /// 桌面壳自己就有窗口，不加会每次启动多弹一个浏览器标签页。
 fn server_command(repo: &Path, port: u16) -> Option<(String, Vec<String>)> {
-    let port_arg = port.to_string();
-    let built = repo.join("apps").join("cli").join("lib").join("bin.js");
-    if built.is_file() {
-        return Some(("node".into(), vec![built.to_string_lossy().into(), "web".into(), "--port".into(), port_arg, "--no-open".into()]));
-    }
-    let src = repo.join("apps").join("cli").join("src").join("bin.ts");
-    if src.is_file() {
-        return Some(("node".into(), vec![
-            "--import".into(), "tsx/esm".into(),
-            src.to_string_lossy().into(), "web".into(), "--port".into(), port_arg, "--no-open".into(),
-        ]));
+    for entry in CLI_ENTRIES {
+        let path = repo.join(entry.rel);
+        if !path.is_file() {
+            continue;
+        }
+        let mut args: Vec<String> = Vec::new();
+        if entry.needs_tsx {
+            args.push("--import".into());
+            args.push("tsx/esm".into());
+        }
+        args.push(path.to_string_lossy().into_owned());
+        args.push("web".into());
+        args.push("--port".into());
+        args.push(port.to_string());
+        args.push("--no-open".into());
+        return Some(("node".into(), args));
     }
     None
 }
@@ -118,10 +166,61 @@ fn tail_text(log_tail: &VecDeque<String>) -> String {
     log_tail.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")
 }
 
+/// dsh 就绪信号的**提示词**：只用来"优先看一眼"，不是必要条件。
+///
+/// 以前这里写的是完整格式 `"dsh web: http://127.0.0.1:"`，把壳的启动绑死在
+/// 上游的输出文案上 —— 文案一改、格式一变，壳就再也认不出就绪行。
+/// 现在只把关键词当作"往哪儿看"的线索，真正的判据是下面的 URL 结构。
+const READY_HINT: &str = "dsh web";
+
+/// 从一行输出里识别"服务器已就绪"并取出 URL；不是就绪行返回 None。
+///
+/// 判据是 **URL 结构**而不是输出文案：
+/// - 端口 = 紧跟 `:` 的连续数字，所以 `3080/?token=…` 这种"端口后跟路径与查询"的写法照样成立；
+/// - 路径与 query 原样保留（丢掉 `?token=` 会让 dsh 的会话鉴权失效）；
+/// - 只认回环地址，避免把日志里别的 URL 误当成服务地址。
+fn parse_ready_url(line: &str) -> Option<String> {
+    // 先就近提示词找（最准确）；找不到再全行扫描 —— 上游改文案时靠这条兜底活下去
+    if let Some(pos) = line.find(READY_HINT) {
+        if let Some(url) = extract_loopback_url(&line[pos..]) {
+            return Some(url);
+        }
+    }
+    extract_loopback_url(line)
+}
+
+/// 在片段里找第一个 `http://<loopback>:<port>[/path][?query]` 并返回。
+/// 端口取自 `:` 之后的连续数字，其余部分（路径、查询）原样拼回。
+fn extract_loopback_url(haystack: &str) -> Option<String> {
+    for host in ["127.0.0.1", "localhost"] {
+        let needle = format!("http://{host}:");
+        let Some(pos) = haystack.find(&needle) else { continue };
+        let after = &haystack[pos + needle.len()..];
+        let digits: String = after.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let Ok(port) = digits.parse::<u16>() else {
+            // 这一段不是合法端口（例如 http://127.0.0.1:abc），继续找下一个
+            continue;
+        };
+        // URL 一路延到遇到空白或收尾标点为止
+        let tail = &after[digits.len()..];
+        let cut = tail
+            .find(|c: char| c.is_whitespace() || matches!(c, ',' | ')' | ']' | '"' | '\'' | '`'))
+            .unwrap_or(tail.len());
+        nav::allow_port(port);
+        return Some(format!("http://{host}:{digits}{}", &tail[..cut]));
+    }
+    None
+}
+
 /// 单次启动尝试：spawn 子进程，逐行读输出直到出现就绪行。
 fn start_server_once(app: &AppHandle, repo: &Path, port: u16) -> Result<String, String> {
-    let (program, args) = server_command(repo, port)
-        .ok_or_else(|| format!("在 {} 找不到 apps/cli 入口（lib/bin.js 或 src/bin.ts），请先在仓库执行 pnpm install 并构建", repo.display()))?;
+    let (program, args) = server_command(repo, port).ok_or_else(|| {
+        format!(
+            "在 {} 找不到 dsh CLI 入口（已尝试：{}）。请先在仓库执行 pnpm install 并构建",
+            repo.display(),
+            CLI_ENTRIES.iter().map(|e| e.rel).collect::<Vec<_>>().join("、")
+        )
+    })?;
 
     log(&format!("启动服务器: {program} {}", args.iter().map(|a| {
         if a.contains(' ') { format!("\"{a}\"") } else { a.clone() }
@@ -170,13 +269,14 @@ fn start_server_once(app: &AppHandle, repo: &Path, port: u16) -> Result<String, 
     let mut log_tail: VecDeque<String> = VecDeque::with_capacity(401);
     // 总超时用绝对截止时间算：若按"每次 recv 各自等 60 秒"，一个活着但永不就绪、
     // 又持续打日志的进程会让超时永远不到期，用户就卡在加载页且没有任何提示。
-    let deadline = Instant::now() + Duration::from_secs(START_TIMEOUT_SECS);
+    let timeout_secs = start_timeout_secs();
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     let url = loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
             abort_started_server(app);
             return Err(format!(
-                "服务器 {START_TIMEOUT_SECS} 秒内未就绪。最近日志：\n{}",
+                "服务器 {timeout_secs} 秒内未就绪。最近日志：\n{}",
                 tail_text(&log_tail)
             ));
         }
@@ -187,21 +287,14 @@ fn start_server_once(app: &AppHandle, repo: &Path, port: u16) -> Result<String, 
                 if log_tail.len() > 400 {
                     log_tail.pop_front();
                 }
-                if let Some(pos) = line.find(URL_LINE) {
-                    let rest = &line[pos + URL_LINE.len()..];
-                    if let Some(port_str) = rest.split(&[',', ' ', ')'][..]).next() {
-                        if let Ok(p) = port_str.parse::<u16>() {
-                            // 实际端口可能来自 OS 随机分配（port=0），以这里解析到的为准
-                            nav::allow_port(p);
-                            break format!("http://127.0.0.1:{p}");
-                        }
-                    }
+                if let Some(url) = parse_ready_url(&line) {
+                    break url;
                 }
             }
             Err(RecvTimeoutError::Timeout) => {
                 abort_started_server(app);
                 return Err(format!(
-                    "服务器 {START_TIMEOUT_SECS} 秒内未就绪。最近日志：\n{}",
+                    "服务器 {timeout_secs} 秒内未就绪。最近日志：\n{}",
                     tail_text(&log_tail)
                 ));
             }
@@ -327,6 +420,50 @@ pub(crate) fn spawn_health_watcher(handle: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_ready_url_variants() {
+        // 老版：只有端口
+        assert_eq!(
+            parse_ready_url("dsh web: http://127.0.0.1:3080"),
+            Some("http://127.0.0.1:3080".to_string())
+        );
+        // 0.1.5-rc.1 的实测输出：端口后紧跟路径与令牌（1.2.7 正是死在这一行上）
+        let real = "dsh web: http://127.0.0.1:3080/?token=jk1o92ee6fG6KREUCH_bUudl7Cw748QCWiXm8tJF3No";
+        assert_eq!(
+            parse_ready_url(real),
+            Some("http://127.0.0.1:3080/?token=jk1o92ee6fG6KREUCH_bUudl7Cw748QCWiXm8tJF3No".to_string())
+        );
+        // 随机端口 / 尾随标点
+        assert_eq!(
+            parse_ready_url("dsh web: http://127.0.0.1:51234, ready"),
+            Some("http://127.0.0.1:51234".to_string())
+        );
+        assert_eq!(
+            parse_ready_url("dsh web: http://127.0.0.1:51234)"),
+            Some("http://127.0.0.1:51234".to_string())
+        );
+        // 上游换了输出文案 —— 没有 "dsh web" 前缀也要能认出来（结构匹配的意义所在）
+        assert_eq!(
+            parse_ready_url("  \u{279c}  ready at http://127.0.0.1:3080/"),
+            Some("http://127.0.0.1:3080/".to_string())
+        );
+        // host 写成 localhost 同样支持
+        assert_eq!(
+            parse_ready_url("dsh web: http://localhost:3080/?token=x"),
+            Some("http://localhost:3080/?token=x".to_string())
+        );
+        // 被引号包起来
+        assert_eq!(
+            parse_ready_url("open \"http://127.0.0.1:3080/?token=x\" to continue"),
+            Some("http://127.0.0.1:3080/?token=x".to_string())
+        );
+        // 端口非法 / 行里没有自己的服务地址：必须返回 None，不能误判
+        assert_eq!(parse_ready_url("dsh web: http://127.0.0.1:abc"), None);
+        assert_eq!(parse_ready_url("dsh web: http://127.0.0.1:"), None);
+        assert_eq!(parse_ready_url("server listening on port 3080"), None);
+        assert_eq!(parse_ready_url("see https://example.com:443/path"), None);
+    }
 
     #[test]
     fn detects_port_in_use_output() {

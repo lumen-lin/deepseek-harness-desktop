@@ -10,7 +10,8 @@ use crate::logging::log;
 use crate::paths;
 
 fn settings_path() -> PathBuf {
-    paths::dsh_home().join("settings.yaml")
+    // 路径只在 paths 里定义一次，避免与 locale.rs 各写一份
+    paths::dsh_settings_path()
 }
 
 /// 读 ui-theme.preference（light/dark/system），失败回 system（跟随系统）。

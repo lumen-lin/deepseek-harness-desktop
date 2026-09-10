@@ -11,7 +11,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use crate::logging::log;
 use crate::repo;
-use crate::server::{creation_flags_windows, kill_server, start_server, DSH_PORT, ServerUrl};
+use crate::server::{creation_flags_windows, kill_server, preferred_port, start_server, ServerUrl};
 
 /// 更新步骤标签（前端进度列表与此一一对应）：
 /// git pull → pnpm install → pnpm run clean → pnpm run build。
@@ -465,7 +465,7 @@ fn restore_server(app: &AppHandle, repo: &Path) {
     // 防御性：确保旧进程已清理（正常流程上游已杀，此处兜底）
     kill_server(app);
     // 端口回退（3080 被占用则改用随机端口）已收在 start_server 内部
-    match start_server(app, repo, DSH_PORT) {
+    match start_server(app, repo, preferred_port()) {
         Ok(url) => {
             let _ = app.emit("server-restored", serde_json::json!({ "url": url }));
         }
@@ -828,7 +828,7 @@ fn restart_server_blocking(app: AppHandle) -> Result<String, String> {
     log("手动重启 dsh web 服务器");
     // 先清理可能残留的旧服务器进程，避免双开
     kill_server(&app);
-    match start_server(&app, &repo, DSH_PORT) {
+    match start_server(&app, &repo, preferred_port()) {
         Ok(url) => {
             if let Some(state) = app.try_state::<ServerUrl>() {
                 *state.0.lock().unwrap() = Some(url.clone());

@@ -60,3 +60,11 @@ pub(crate) fn dsh_home() -> PathBuf {
     }
     dirs_home().join(".dsh")
 }
+
+/// dsh 的共享设置文件（主题偏好与语言偏好都写在这里）。
+///
+/// 抽成函数是因为 theme.rs 与 locale.rs 都要读它 —— 以前两边各写一份
+/// `dsh_home().join("settings.yaml")`，将来上游改文件名容易漏改一处。
+pub(crate) fn dsh_settings_path() -> PathBuf {
+    dsh_home().join("settings.yaml")
+}
