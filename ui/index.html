@@ -20,8 +20,9 @@
     #menu-wrap { position: relative; display: flex; align-items: center; }
     .tb-brand { display: flex; align-items: center; gap: 8px; height: 40px;
       padding: 0 12px; border: none; background: none; cursor: default; }
-    /* logo 配色：原来靠 SVG 内嵌的 `<style>path{fill:…}</style>`，但那个选择器
-       是全局作用域（会命中文档里所有 path）。改用 currentColor + 这里的 color。 */
+    /* logo 配色：原来靠 SVG 内嵌的 style 标签里写 path{fill:…}，但那个选择器
+       是全局作用域（会命中文档里所有 path）。改用 currentColor + 这里的 color。
+       注意：注释里不能出现闭合的 style 标签字面量，HTML 解析器会提前结束本块。 */
     .tb-brand .logo { color: #4D6BFE; }
     #help-menu { position: absolute; top: 40px; left: 0; min-width: 230px;
       border-radius: 8px; padding: 5px; display: none; z-index: 100;
