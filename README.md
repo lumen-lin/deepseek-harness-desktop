@@ -18,12 +18,13 @@
 | ✅ 是什么 | 一个轻量启动器：定位 `deepseek-harness` 仓库 → 启动其 `dsh web` 服务器 → 在窗口里加载官方 Web UI |
 | ❌ 不是什么 | 不是独立的 AI 聊天软件。没有它自带 dsh 本体，也没有内置模型 |
 
-壳本体只有大约 5 MB（Tauri 借用系统 WebView2 渲染），**运行时依赖**：
+壳本体只有大约 5 MB（Tauri 借用系统 WebView2 渲染），**首次使用需要**：
 
-- `deepseek-harness` 官方仓库
-- Node.js 22.19+（推荐 24+）
+- Git 与 Node.js 22.19+（推荐 24+）—— 安装向导会自动检测，缺什么给什么下载指引
 - WebView2（Win10/11 系统自带；老系统安装时会自动引导下载）
-- （可选，仅更新功能需要）git + pnpm
+- `deepseek-harness` 官方仓库 —— **无需手动准备，首次启动会一键自动安装**
+
+> pnpm 无需手动安装：壳会自动对齐官方仓库声明的版本（通过 Node 自带的 corepack）。
 
 ## 安装
 
@@ -36,20 +37,22 @@
 
 ## 使用
 
-1. 准备官方仓库（任选其一）：
-   ```sh
-   git clone https://github.com/deepseek-ai/deepseek-harness.git
-   cd deepseek-harness
-   pnpm install
-   pnpm run build
-   ```
-2. 打开 DeepSeek Harness。首次启动若未自动找到仓库，会弹窗让你**手动选择仓库根目录'deepseek-harness'**。
+**v2.0.0 起：无需任何手动命令。** 首次启动会自动进入安装向导：
 
-<img width="1246" height="694" alt="QQ_1787390031188" src="https://github.com/user-attachments/assets/556b83c5-65c4-4d88-8134-8d3a3f518879" />
+1. **环境自检** —— 检测 Git / Node.js / pnpm，缺什么给安装指引与官方下载链接
+2. **选择位置** —— 默认装到壳所在目录，也可以自选其他位置
+3. **自动安装** —— 依次完成 克隆仓库 → 安装依赖 → 构建项目，全程实时日志
+4. **自动启动** —— 完成后直接进入界面
 
-   
-3. 在界面里配置模型 API Key，选择一个工作区，开始使用。
-4. 选择语言
+<!-- TODO: 建议补一张 v2.0.0 安装向导的截图（旧的"手动选择仓库"弹窗已不再出现） -->
+
+> **已装过的不会重复安装**：向导会先识别目标目录的真实状态 —— 已是可用仓库就直接复用；
+> 装到一半的从断点继续；目录被其他文件占用则提示更换位置（**不会动你的文件**）。
+
+进入界面后：
+
+1. 在界面里配置模型 API Key，选择一个工作区，开始使用。
+2. 选择语言
 
 <img width="2161" height="1354" alt="image" src="https://github.com/user-attachments/assets/893b938a-ffb9-4465-96e5-e4a0e63ade21" />
 
@@ -113,9 +116,9 @@ cargo tauri build
 ## 常见问题
 
 **提示找不到仓库？**
-壳会从 exe 所在位置逐级向上查找 `deepseek-harness` 目录，找不到就弹窗让你手选。也可以设置环境变量 `DSH_REPO` 直接指定仓库路径。
-
-<img width="1246" height="694" alt="QQ_1787390031188" src="https://github.com/user-attachments/assets/556b83c5-65c4-4d88-8134-8d3a3f518879" />
+首次启动若本机没有官方仓库，会自动进入安装向导一键装好，无需任何手动命令。
+如果你已经手动 clone 过，壳会从 exe 所在位置逐级向上查找 `deepseek-harness` 目录并直接复用；
+也可以用环境变量 `DSH_REPO` 直接指定仓库路径。
 
 
 ## 目录结构
@@ -130,6 +133,7 @@ cargo tauri build
 │   │   ├── shell.rs       # 壳页面本地服务站（同站托管 + 调用令牌，见下方「为什么」）
 │   │   ├── nav.rs         # 导航白名单：主窗口只允许停在本进程自己的服务端口
 │   │   ├── update.rs      # 自动更新流程（拉取/切版本 + pnpm install/clean/build）
+│   │   ├── install.rs     # 首次安装向导（环境检测 / 目录状态判定 / 克隆+装依赖+构建）
 │   │   ├── theme.rs       # 主题跟随（settings.yaml 监听）
 │   │   ├── locale.rs      # 语言跟随（settings.yaml 监听）
 │   │   ├── logging.rs     # 日志

@@ -20,12 +20,13 @@ Tiny footprint, one-click launch. The shell works well for daily use and covers 
 | ✅ What it is | A lightweight launcher: locate the `deepseek-harness` repository → start its `dsh web` server → load the official Web UI in a window |
 | ❌ What it is not | Not a standalone AI chat app. It does not bundle the dsh core, nor does it include any models |
 
-The shell itself is only ~5 MB (Tauri reuses the system WebView2 for rendering). **Runtime dependencies**:
+The shell itself is only ~5 MB (Tauri reuses the system WebView2 for rendering). **What you need to get started**:
 
-- The `deepseek-harness` official repository
-- Node.js 22.19+ (24+ recommended)
+- Git and Node.js 22.19+ (24+ recommended) — the setup wizard detects them and gives you download links if anything is missing
 - WebView2 (built into Windows 10/11; older systems will be guided through the download during installation)
-- (Optional, only needed for the update feature) git + pnpm
+- The `deepseek-harness` official repository — **no manual setup needed; the first launch installs it automatically**
+
+> No need to install pnpm yourself: the shell aligns with the version declared by the official repository (via Node's bundled corepack).
 
 ## Installation
 
@@ -38,20 +39,23 @@ Double-click the installer icon
 
 ## Usage
 
-1. Prepare the official repository:
-   ```sh
-   git clone https://github.com/deepseek-ai/deepseek-harness.git
-   cd deepseek-harness
-   pnpm install
-   pnpm run build
-   ```
-2. Launch DeepSeek Harness. On first start, if the repository is not auto-detected, a dialog will ask you to **manually select the repository root 'deepseek-harness'** .
+**As of v2.0.0: no manual commands required.** The first launch walks you through a setup wizard:
 
-<img width="1246" height="694" alt="QQ_1787390031188" src="https://github.com/user-attachments/assets/556b83c5-65c4-4d88-8134-8d3a3f518879" />
+1. **Environment check** — detects Git / Node.js / pnpm and links you to the official downloads for anything missing
+2. **Choose a location** — defaults to the shell's own directory, or pick your own
+3. **Automatic install** — clone → install dependencies → build, with live logs throughout
+4. **Automatic start** — lands straight in the UI when done
 
+<!-- TODO: add a screenshot of the v2.0.0 setup wizard (the old "pick the repo manually" dialog no longer appears) -->
 
-3. Configure your model API key in the UI, pick a workspace, and start using it.
-4. Choose your language
+> **No duplicate installs**: the wizard inspects the target directory first — a working repo is reused as-is;
+> a half-finished install resumes from where it stopped; a directory occupied by other files is refused with a
+> prompt to choose another location (**your files are never touched**).
+
+Once in the UI:
+
+1. Configure your model API key, pick a workspace, and start using it.
+2. Choose your language
 
 <img width="2152" height="1344" alt="image" src="https://github.com/user-attachments/assets/3f5e4bdc-679a-4e4a-ac41-45c8879241e1" />
 
@@ -122,9 +126,8 @@ Output goes to `target/release/bundle/nsis/`. Requires the Rust toolchain (editi
 ## FAQ
 
 **"Repository not found" prompt?**
-The shell searches upward from the exe location for the `deepseek-harness` directory; if not found, it asks you to pick it manually. You can also set the `DSH_REPO` environment variable to point directly at the repository path.
-
-<img width="1246" height="694" alt="QQ_1787390031188" src="https://github.com/user-attachments/assets/ea68342b-c9b1-4ebd-9718-cfd8a193bb20" />
+If the official repository is missing on first launch, the setup wizard installs it for you automatically — no manual commands.
+If you already cloned it yourself, the shell searches upward from the exe location for the `deepseek-harness` directory and reuses it. You can also set the `DSH_REPO` environment variable to point directly at the repository path.
 
 
 ## Project structure
@@ -139,6 +142,7 @@ The shell searches upward from the exe location for the `deepseek-harness` direc
 │   │   ├── shell.rs       # Local HTTP server for the shell page (same-site hosting + call token)
 │   │   ├── nav.rs         # Navigation allow-list: main window may only stay on our own ports
 │   │   ├── update.rs      # Auto-update flow (pull/switch + pnpm install/clean/build)
+│   │   ├── install.rs     # First-run setup wizard (env check / dir state / clone+install+build)
 │   │   ├── theme.rs       # Theme following (settings.yaml watcher)
 │   │   ├── locale.rs      # Language following (settings.yaml watcher)
 │   │   ├── logging.rs     # Logging
