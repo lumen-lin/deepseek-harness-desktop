@@ -75,13 +75,13 @@
     .version-row .ver-picker { flex: 1; min-width: 0; max-width: 340px; padding: 6px 8px; font-size: 12.5px;
       border-radius: 7px; border: 1px solid transparent; outline: none; cursor: pointer;
       font-family: ui-monospace, Consolas, monospace; }
-    #update-view ol { list-style: none; margin: 0 0 4px; padding: 0; font-size: 13px; line-height: 1.6; display: none; }
-    #update-view.show-steps ol { display: block; }
-    #update-view li { position: relative; padding: 7px 0 7px 30px; }
-    #update-view li::before { content: ""; position: absolute; left: 9px; top: 50%;
+    #update-view ol, #inst-steps { list-style: none; margin: 0 0 4px; padding: 0; font-size: 13px; line-height: 1.6; display: none; }
+    #update-view.show-steps ol, #install-view.show-steps #inst-steps { display: block; }
+    #update-view li, #inst-steps li { position: relative; padding: 7px 0 7px 30px; }
+    #update-view li::before, #inst-steps li::before { content: ""; position: absolute; left: 9px; top: 50%;
       transform: translateY(-50%); width: 9px; height: 9px; border-radius: 50%; }
-    #update-view li::after { content: ""; position: absolute; left: 13px; top: 26px; bottom: -7px; width: 1px; }
-    #update-view li:last-child::after { display: none; }
+    #update-view li::after, #inst-steps li::after { content: ""; position: absolute; left: 13px; top: 26px; bottom: -7px; width: 1px; }
+    #update-view li:last-child::after, #inst-steps li:last-child::after { display: none; }
     li[data-status="pending"] { opacity: .5; }
     li[data-status="pending"]::before { background: #8a90a0; }
     li[data-status="running"] { color: #4f8cff; opacity: 1; }
@@ -90,13 +90,13 @@
     li[data-status="done"]::before { background: #3aa675; }
     li[data-status="failed"] { color: #d2554d; opacity: 1; }
     li[data-status="failed"]::before { background: #d2554d; }
-    #update-log-wrap { display: none; flex-direction: column; margin-top: 10px; min-height: 0; }
-    #update-view.show-log #update-log-wrap { display: flex; }
-    #update-log-wrap summary { font-size: 12px; cursor: pointer; opacity: .65; user-select: none; }
-    #update-log-wrap[open] summary { margin-bottom: 8px; }
-    #update-log { overflow: auto; margin: 0; padding: 10px; border-radius: 8px; font-size: 11px;
+    #update-log-wrap, #inst-log-wrap { display: none; flex-direction: column; margin-top: 10px; min-height: 0; }
+    #update-view.show-log #update-log-wrap, #install-view.show-log #inst-log-wrap { display: flex; }
+    #update-log-wrap summary, #inst-log-wrap summary { font-size: 12px; cursor: pointer; opacity: .65; user-select: none; }
+    #update-log-wrap[open] summary, #inst-log-wrap[open] summary { margin-bottom: 8px; }
+    #update-log, #inst-log { overflow: auto; margin: 0; padding: 10px; border-radius: 8px; font-size: 11px;
       white-space: pre-wrap; word-break: break-all; max-height: 170px; }
-    #update-error { display: none; color: #d2554d; font-size: 12px; margin-top: 10px; white-space: pre-wrap; }
+    #update-error, #inst-error { display: none; color: #d2554d; font-size: 12px; margin-top: 10px; white-space: pre-wrap; }
     .update-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; }
     /* 更新中：关闭按钮灰显提示不可关闭 */
     #titlebar.updating #btn-close { opacity: .35; }
@@ -116,6 +116,35 @@
     /* 日志行高亮（更新页日志与日志查看窗共用；深色为基准色，浅色在媒体查询覆盖） */
     .lg-err { color: #ff8578; }
     .lg-warn { color: #e6b45c; }
+
+    /* ---------- 首次安装向导 ---------- */
+    #install-view { display: none; flex-direction: column; padding: 26px; align-items: center; justify-content: center; }
+    #install-view h1 { font-size: 17px; margin: 0 0 6px; }
+    #inst-env-list { list-style: none; margin: 0 0 12px; padding: 0; font-size: 13px; }
+    #inst-env-list li { display: flex; align-items: center; gap: 9px; padding: 6px 0; }
+    .env-dot { width: 9px; height: 9px; border-radius: 50%; background: #8a90a0; flex: none; }
+    #inst-env-list li[data-state="ok"] .env-dot { background: #3aa675; }
+    #inst-env-list li[data-state="bad"] .env-dot { background: #d2554d; }
+    .env-name { font-weight: 500; min-width: 64px; }
+    .env-status { opacity: .75; font-size: 12.5px; }
+    #inst-env-guide { display: none; font-size: 12.5px; line-height: 1.8; margin: 0 0 12px; }
+    #inst-env-guide.show { display: block; }
+    #inst-env-guide .gd-row { margin: 4px 0; }
+    #inst-env-guide a { color: #4f8cff; cursor: pointer; text-decoration: none; }
+    #inst-env-guide a:hover { text-decoration: underline; }
+    #inst-dir-area { display: none; width: 100%; flex-direction: column; }
+    #inst-dir-area.show { display: flex; }
+    #inst-dir-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    #inst-dir-input { flex: 1; min-width: 0; padding: 7px 10px; border-radius: 8px; font-size: 12px;
+      border: 1px solid transparent; outline: none; font-family: ui-monospace, Consolas, monospace; }
+    #inst-dir-browse { min-width: 72px; padding: 7px 12px; border-radius: 8px; font-size: 12.5px;
+      border: 1px solid transparent; cursor: default; }
+    #inst-dir-status { font-size: 12.5px; min-height: 20px; line-height: 1.55; }
+    #inst-dir-status[data-state="ok"] { color: #3aa675; }
+    #inst-dir-status[data-state="warn"] { color: #ef9f27; }
+    #inst-dir-status[data-state="bad"] { color: #d2554d; }
+    #inst-dir-status[data-state="checking"] { opacity: .6; }
+    #inst-btn-main:disabled { opacity: .45; cursor: default; }
 
     /* 服务器断线视图 */
     #server-dead-view { display: none; flex-direction: column; align-items: center;
@@ -156,14 +185,17 @@
       .mi-sep { background: #333846; }
       .hint { color: #6b7280; }
       .update-hint { color: #6b7280; }
-      #update-log { background: #0d0f14; color: #9aa2b4; }
+      #update-log, #inst-log { background: #0d0f14; color: #9aa2b4; }
       .modal { background: #232734; border: 1px solid #333846; }
       .btn-ghost { color: #d7dae0; border-color: #3a4050; }
       .btn-ghost:hover { background: #2f3442; }
       #dsh-frame { background: #14161c; }
       #loading-view, #server-dead-view { background: #14161c; }
       .update-card { background: #1b1e27; border: 1px solid #333846; }
-      #update-view li::after { background: #333846; }
+      #update-view li::after, #inst-steps li::after { background: #333846; }
+      #inst-dir-input { background: #14161c; color: #d7dae0; border-color: #333846; }
+      #inst-dir-browse { background: #14161c; color: #d7dae0; border-color: #333846; }
+      #inst-dir-browse:hover { background: #2f3442; }
       .version-row code { background: #0d0f14; }
       .version-row .ver-picker { background: #14161c; color: #d7dae0; border-color: #333846; }
       .log-toolbar input[type="text"] { background: #14161c; color: #d7dae0; border-color: #333846; }
@@ -179,14 +211,17 @@
       .mi-sep { background: #e2e5ee; }
       .hint { color: #8a90a0; }
       .update-hint { color: #8a90a0; }
-      #update-log { background: #e9ecf4; color: #5a6274; }
+      #update-log, #inst-log { background: #e9ecf4; color: #5a6274; }
       .modal { background: #ffffff; border: 1px solid #d8dce6; }
       .btn-ghost { color: #3a3f4b; border-color: #c8cdd9; }
       .btn-ghost:hover { background: #edf0f7; }
       #dsh-frame { background: #f5f6fa; }
       #loading-view, #server-dead-view { background: #f5f6fa; }
       .update-card { background: #ffffff; border: 1px solid #d8dce6; }
-      #update-view li::after { background: #d8dce6; }
+      #update-view li::after, #inst-steps li::after { background: #d8dce6; }
+      #inst-dir-input { background: #ffffff; color: #3a3f4b; border-color: #c8cdd9; }
+      #inst-dir-browse { background: #ffffff; color: #3a3f4b; border-color: #c8cdd9; }
+      #inst-dir-browse:hover { background: #edf0f7; }
       .version-row code { background: #e9ecf4; }
       .version-row .ver-picker { background: #ffffff; color: #3a3f4b; border-color: #c8cdd9; }
       .log-toolbar input[type="text"] { background: #ffffff; border-color: #d8dce6; }
@@ -268,6 +303,38 @@
       </div>
     </div>
 
+    <!-- 首次安装向导：未找到 dsh 仓库时显示（检测环境 → 选目录 → 克隆/续装 → 构建） -->
+    <div class="overlay" id="install-view">
+      <div class="update-card">
+        <div class="phase-icon checking" id="inst-icon"><div class="spin"></div></div>
+        <h1 id="inst-title" data-i18n="inst.title.env">首次使用：检测运行环境</h1>
+        <div class="update-hint" id="inst-hint"></div>
+        <ul id="inst-env-list">
+          <li id="env-git" data-state="checking"><span class="env-dot"></span><span class="env-name">Git</span><span class="env-status">…</span></li>
+          <li id="env-node" data-state="checking"><span class="env-dot"></span><span class="env-name">Node.js</span><span class="env-status">…</span></li>
+          <li id="env-pnpm" data-state="checking"><span class="env-dot"></span><span class="env-name">pnpm</span><span class="env-status">…</span></li>
+        </ul>
+        <div id="inst-env-guide"></div>
+        <div id="inst-dir-area">
+          <div id="inst-dir-row">
+            <input type="text" id="inst-dir-input" spellcheck="false" />
+            <button id="inst-dir-browse" data-i18n="inst.dir.browse">浏览…</button>
+          </div>
+          <div id="inst-dir-status"></div>
+        </div>
+        <ol id="inst-steps"></ol>
+        <details id="inst-log-wrap">
+          <summary data-i18n="log.summary">详细日志</summary>
+          <pre id="inst-log"></pre>
+        </details>
+        <pre id="inst-error"></pre>
+        <div class="update-actions">
+          <button class="btn-ghost" id="inst-btn-recheck" data-i18n="inst.btn.recheck">重新检测</button>
+          <button class="btn-primary" id="inst-btn-main" data-i18n="inst.btn.install">开始安装</button>
+        </div>
+      </div>
+    </div>
+
     <!-- 运行日志查看窗 -->
     <div class="modal-mask" id="logmask">
       <div class="modal log-modal">
@@ -344,9 +411,9 @@
         'close.body2': '「隐藏到托盘」可让会话与服务在后台继续运行；「退出」将终止它们。',
         'close.tray': '隐藏到托盘',
         'close.cancel': '取消', 'close.ok': '退出',
-        'close.updatingTitle': '更新正在进行中',
-        'close.updatingBody': '构建尚未完成，现在退出会中断更新并可能损坏产物。\n可选择「隐藏到托盘」让构建在后台继续。',
-        'close.backUpdate': '返回更新页面',
+        'close.updatingTitle': '安装/更新正在进行中',
+        'close.updatingBody': '构建尚未完成，现在退出会中断任务并可能损坏产物。\n可选择「隐藏到托盘」让任务在后台继续。',
+        'close.backUpdate': '返回任务页面',
         'about.site': '官网：', 'about.repo': '官方仓库：', 'about.ok': '确定',
         'about.loading': '正在读取版本信息…',
         'about.body': '桌面壳版本：{shell}\nDeepSeek Harness（dsh）：{dsh}\n\n仓库目录：{repo}',
@@ -371,6 +438,38 @@
         'fail.rolledback': '✅ 已自动回滚到更新前的版本并重新构建，服务器已恢复正常。\n（本次失败是官方代码自身构建不通过，与本壳无关）\n\n',
         'fail.rebuildfailed': '⚠️ 回滚后重建仍然失败：更新前的版本同样无法构建，请检查 Node.js / pnpm 环境后重试。\n\n',
         'warn.knownbad': '⚠️ 该版本此前构建失败过（多半是官方代码自身编译不过）。现在更新大概率仍会失败并自动回滚，建议等官方修复后再试。',
+        'inst.title.env': '首次使用：检测运行环境',
+        'inst.hint.env': '安装官方仓库需要 Git 与 Node.js，正在检测本机环境…',
+        'inst.env.found': '已安装', 'inst.env.missing': '未安装',
+        'inst.env.old': '版本过旧（需 ≥22.19 或 ≥24）',
+        'inst.env.viacorepack': '经 Node 自带 corepack 自动管理',
+        'inst.guide.git': '未检测到 Git。请先安装 Git for Windows，装好后点「重新检测」。',
+        'inst.guide.node': '未检测到可用的 Node.js（需 ≥22.19 或 ≥24）。请安装 Node.js LTS，装好后点「重新检测」。',
+        'inst.guide.pnpm': '未检测到 pnpm。Node.js 自带的 corepack 可自动管理 pnpm；若仍不可用，请在终端执行 npm install -g pnpm 后点「重新检测」。',
+        'inst.guide.dlgit': '下载 Git', 'inst.guide.dlnode': '下载 Node.js',
+        'inst.btn.recheck': '重新检测',
+        'inst.title.dir': '选择安装位置',
+        'inst.hint.dir': '官方仓库将安装到所选目录（默认为桌面壳旁的 deepseek-harness 目录）。已安装过的目录会被识别并直接使用，不会重复安装。',
+        'inst.dir.browse': '浏览…', 'inst.dir.checking': '正在检查目录…',
+        'inst.dir.empty': '✓ 目录可用，将全新安装（官方最新 master）',
+        'inst.dir.valid': '✓ 检测到已安装好的 dsh（版本 {ver}），无需重复安装',
+        'inst.dir.incomplete': '检测到未完成的安装（缺：{missing}），可断点续装',
+        'inst.dir.broken': '该目录是上次克隆中断的残留，请换一个空目录（或手动删除后重试）',
+        'inst.dir.occupied': '目录非空且不是 dsh 仓库，为避免误动您的文件，请换一个目录',
+        'inst.dir.invalid': '路径无效',
+        'inst.btn.install': '开始安装', 'inst.btn.resume': '继续安装', 'inst.btn.use': '直接使用',
+        'inst.title.running': '正在安装 DeepSeek Harness',
+        'inst.hint.running': '首次安装需下载较多依赖，可能持续 10~20 分钟。请勿关闭窗口（可隐藏到托盘让安装后台继续）。',
+        'inst.title.use': '正在启动 DeepSeek Harness',
+        'inst.step.clone': '克隆官方仓库（git clone）',
+        'inst.step.install': '安装依赖（pnpm install）',
+        'inst.step.build': '构建（pnpm run build）',
+        'inst.title.done': '安装完成',
+        'inst.hint.done': '正在启动服务，即将进入应用…',
+        'inst.title.failed': '安装失败',
+        'inst.fail.step': '步骤「{step}」失败，最近输出：\n{tail}',
+        'inst.fail.server': '安装已完成，但服务启动失败：{err}\n\n仓库已就绪，重新打开应用即可使用。',
+        'inst.btn.retry': '重试', 'inst.btn.backdir': '返回目录选择',
       },
       en: {
         'title.help': 'Help',
@@ -390,9 +489,9 @@
         'close.body2': '"Hide to Tray" keeps sessions and the server running in the background; "Quit" terminates them.',
         'close.tray': 'Hide to Tray',
         'close.cancel': 'Cancel', 'close.ok': 'Quit',
-        'close.updatingTitle': 'Update in Progress',
-        'close.updatingBody': 'The build is still running. Quitting now would interrupt the update and may corrupt artifacts.\nChoose "Hide to Tray" to let the build continue in the background.',
-        'close.backUpdate': 'Back to Update',
+        'close.updatingTitle': 'Install/Update in Progress',
+        'close.updatingBody': 'The build is still running. Quitting now would interrupt the task and may corrupt artifacts.\nChoose "Hide to Tray" to let the task continue in the background.',
+        'close.backUpdate': 'Back to Task',
         'about.site': 'Website: ', 'about.repo': 'Repository: ', 'about.ok': 'OK',
         'about.loading': 'Reading version info…',
         'about.body': 'Shell version: {shell}\nDeepSeek Harness (dsh): {dsh}\n\nRepository: {repo}',
@@ -417,6 +516,38 @@
         'fail.rolledback': '✅ Automatically rolled back to the previous version and rebuilt; the server is running again.\n(The failure came from the upstream source failing to build, not from this shell.)\n\n',
         'fail.rebuildfailed': '⚠️ Rebuild after rollback also failed: the previous version cannot be built either. Check your Node.js / pnpm setup and retry.\n\n',
         'warn.knownbad': '⚠️ This version failed to build before (usually the upstream source does not compile). Updating will likely fail and roll back — consider waiting for an upstream fix.',
+        'inst.title.env': 'First Run: Checking Environment',
+        'inst.hint.env': 'Installing the official repository requires Git and Node.js. Checking your system…',
+        'inst.env.found': 'Installed', 'inst.env.missing': 'Not found',
+        'inst.env.old': 'Too old (need ≥22.19 or ≥24)',
+        'inst.env.viacorepack': 'Managed via Node.js corepack',
+        'inst.guide.git': 'Git was not found. Install Git for Windows first, then click "Re-check".',
+        'inst.guide.node': 'No usable Node.js found (need ≥22.19 or ≥24). Install the Node.js LTS, then click "Re-check".',
+        'inst.guide.pnpm': 'pnpm was not found. Node.js ships with corepack which can manage pnpm automatically; if it is still unavailable, run "npm install -g pnpm" in a terminal, then click "Re-check".',
+        'inst.guide.dlgit': 'Download Git', 'inst.guide.dlnode': 'Download Node.js',
+        'inst.btn.recheck': 'Re-check',
+        'inst.title.dir': 'Choose Install Location',
+        'inst.hint.dir': 'The official repository will be installed into the chosen folder (default: deepseek-harness next to this app). An existing installation is detected and reused — never reinstalled.',
+        'inst.dir.browse': 'Browse…', 'inst.dir.checking': 'Checking folder…',
+        'inst.dir.empty': '✓ Folder is usable — fresh install (latest upstream master)',
+        'inst.dir.valid': '✓ Existing dsh installation found (version {ver}) — no need to reinstall',
+        'inst.dir.incomplete': 'Incomplete installation found (missing: {missing}) — can resume',
+        'inst.dir.broken': 'This folder is leftover from an interrupted clone. Pick an empty folder (or delete it manually and retry)',
+        'inst.dir.occupied': 'Folder is not empty and is not a dsh repository. Pick another one to keep your files safe',
+        'inst.dir.invalid': 'Invalid path',
+        'inst.btn.install': 'Install', 'inst.btn.resume': 'Resume Install', 'inst.btn.use': 'Use It',
+        'inst.title.running': 'Installing DeepSeek Harness',
+        'inst.hint.running': 'The first install downloads many dependencies and may take 10–20 minutes. Do not close this window (you may hide it to the tray to continue in the background).',
+        'inst.title.use': 'Starting DeepSeek Harness',
+        'inst.step.clone': 'Clone official repository (git clone)',
+        'inst.step.install': 'Install dependencies (pnpm install)',
+        'inst.step.build': 'Build (pnpm run build)',
+        'inst.title.done': 'Installation Complete',
+        'inst.hint.done': 'Starting the server, entering the app…',
+        'inst.title.failed': 'Installation Failed',
+        'inst.fail.step': 'Step "{step}" failed. Recent output:\n{tail}',
+        'inst.fail.server': 'Installation finished, but the server failed to start: {err}\n\nThe repository is ready — reopen the app to use it.',
+        'inst.btn.retry': 'Retry', 'inst.btn.backdir': 'Back to Folder',
       },
     }
     let LANG = 'zh'
@@ -560,6 +691,7 @@
       mode = 'app'
       $('loading-view').style.display = 'none'
       $('update-view').style.display = 'none'
+      $('install-view').style.display = 'none'
       showFrame()
     }
     // 重启服务场景：置位后等 iframe load 完成再一次性切视图（与首启 loading 页
@@ -805,6 +937,236 @@
 
     $('mi-update').addEventListener('click', () => { closeMenu(); openUpdatePage() })
 
+    // ---------- 首次安装向导 ----------
+    // 未找到 dsh 仓库时进入：检测环境 → 选目录（五态判定，防重复安装）→
+    // 克隆/续装/直接使用。装完由 Rust 侧直接起服务器并发 server-ready。
+    let instPhase = 'env'        // env | dir | running | failed
+    let instMode = 'fresh'       // fresh | resume | use
+    let instDir = ''
+    let instLogFollow = true
+    const instLogEl = $('inst-log')
+    instLogEl.addEventListener('scroll', () => {
+      const atBottom = instLogEl.scrollTop + instLogEl.clientHeight >= instLogEl.scrollHeight - 30
+      if (!atBottom && instLogEl.scrollHeight > instLogEl.clientHeight) instLogFollow = false
+      else if (atBottom) instLogFollow = true
+    })
+    const instIcon = $('inst-icon')
+    const setInstIcon = (kind) => {
+      if (!kind) { instIcon.className = 'phase-icon'; instIcon.innerHTML = ''; return }
+      instIcon.className = 'phase-icon ' + (kind === 'spin' ? 'checking' : kind === 'up' ? 'up' : kind === 'ok' ? 'ok' : 'fail')
+      instIcon.innerHTML = ICONS[kind]
+    }
+
+    const renderEnvRow = (id, info) => {
+      const li = $(id)
+      const status = li.querySelector('.env-status')
+      if (info === null) { li.dataset.state = 'checking'; status.textContent = '…'; return }
+      li.dataset.state = info.found ? 'ok' : 'bad'
+      let s = info.found ? t('inst.env.found') : (info.note === 'old' ? t('inst.env.old') : t('inst.env.missing'))
+      if (info.version) s += ' · ' + info.version
+      if (info.note === 'via_corepack') s += ' · ' + t('inst.env.viacorepack')
+      status.textContent = s
+    }
+
+    // 依赖缺失指引：文本 + 可选的下载链接（经 open_external 走系统浏览器）
+    const renderGuide = (items) => {
+      const g = $('inst-env-guide')
+      g.replaceChildren()
+      for (const it of items) {
+        const row = document.createElement('div')
+        row.className = 'gd-row'
+        row.textContent = it.text + ' '
+        if (it.url) {
+          const a = document.createElement('a')
+          a.textContent = it.link
+          a.addEventListener('click', () => invoke('open_external', { url: it.url }).catch(() => {}))
+          row.appendChild(a)
+        }
+        g.appendChild(row)
+      }
+      g.classList.add('show')
+    }
+
+    const recheckEnv = async () => {
+      instPhase = 'env'
+      setInstIcon('spin')
+      $('inst-title').textContent = t('inst.title.env')
+      $('inst-hint').textContent = t('inst.hint.env')
+      $('inst-env-list').style.display = 'block'
+      $('inst-env-guide').classList.remove('show')
+      $('inst-dir-area').classList.remove('show')
+      $('install-view').classList.remove('show-steps', 'show-log')
+      $('inst-error').style.display = 'none'
+      $('inst-btn-main').style.display = 'none'
+      $('inst-btn-recheck').style.display = 'none'
+      for (const id of ['env-git', 'env-node', 'env-pnpm']) renderEnvRow(id, null)
+      try {
+        const env = await invoke('check_env')
+        renderEnvRow('env-git', env.git)
+        renderEnvRow('env-node', env.node)
+        renderEnvRow('env-pnpm', env.pnpm)
+        if (env.ok) { enterDirPhase(); return }
+        const guide = []
+        if (!env.git.found) guide.push({ text: t('inst.guide.git'), url: 'https://git-scm.com/downloads/win', link: t('inst.guide.dlgit') })
+        if (!env.node.found) guide.push({ text: t('inst.guide.node'), url: 'https://nodejs.org/', link: t('inst.guide.dlnode') })
+        if (env.git.found && env.node.found && !env.pnpm.found) guide.push({ text: t('inst.guide.pnpm') })
+        renderGuide(guide)
+        setInstIcon('fail')
+        $('inst-btn-recheck').textContent = t('inst.btn.recheck')
+        $('inst-btn-recheck').style.display = 'inline-block'
+      } catch (err) {
+        setInstIcon('fail')
+        $('inst-error').textContent = `${err}`
+        $('inst-error').style.display = 'block'
+        $('inst-btn-recheck').textContent = t('inst.btn.recheck')
+        $('inst-btn-recheck').style.display = 'inline-block'
+      }
+    }
+
+    const enterDirPhase = async () => {
+      instPhase = 'dir'
+      setInstIcon('up')
+      $('inst-title').textContent = t('inst.title.dir')
+      $('inst-hint').textContent = t('inst.hint.dir')
+      $('inst-env-guide').classList.remove('show')
+      $('inst-dir-area').classList.add('show')
+      $('inst-btn-recheck').style.display = 'none'
+      if (!$('inst-dir-input').value) {
+        try { $('inst-dir-input').value = await invoke('default_install_dir') } catch { /* 无默认则留空 */ }
+      }
+      recheckDir()
+    }
+
+    // 目录五态判定：input 变化防抖后调后端（只读判定，无副作用）
+    let dirCheckTimer = null
+    $('inst-dir-input').addEventListener('input', () => {
+      clearTimeout(dirCheckTimer)
+      dirCheckTimer = setTimeout(recheckDir, 350)
+    })
+    $('inst-dir-browse').addEventListener('click', async () => {
+      try {
+        const picked = await invoke('pick_install_dir')
+        if (picked) { $('inst-dir-input').value = picked; recheckDir() }
+      } catch { /* 用户取消或对话框异常：保持现状 */ }
+    })
+
+    const recheckDir = async () => {
+      const dir = $('inst-dir-input').value.trim()
+      instDir = dir
+      const stEl = $('inst-dir-status')
+      const mainBtn = $('inst-btn-main')
+      mainBtn.disabled = true
+      if (!dir) { stEl.textContent = ''; stEl.dataset.state = ''; mainBtn.style.display = 'none'; return }
+      stEl.textContent = t('inst.dir.checking'); stEl.dataset.state = 'checking'
+      try {
+        const r = await invoke('inspect_install_dir', { dir })
+        if (r.state === 'empty') {
+          stEl.textContent = t('inst.dir.empty'); stEl.dataset.state = 'ok'
+          instMode = 'fresh'; mainBtn.textContent = t('inst.btn.install'); mainBtn.disabled = false
+        } else if (r.state === 'dsh_valid') {
+          stEl.textContent = t('inst.dir.valid', { ver: r.detail || t('unknown') }); stEl.dataset.state = 'ok'
+          instMode = 'use'; mainBtn.textContent = t('inst.btn.use'); mainBtn.disabled = false
+        } else if (r.state === 'dsh_incomplete') {
+          stEl.textContent = t('inst.dir.incomplete', { missing: r.detail }); stEl.dataset.state = 'warn'
+          instMode = 'resume'; mainBtn.textContent = t('inst.btn.resume'); mainBtn.disabled = false
+        } else if (r.state === 'clone_broken') {
+          stEl.textContent = t('inst.dir.broken'); stEl.dataset.state = 'bad'; mainBtn.style.display = 'none'; return
+        } else if (r.state === 'occupied') {
+          stEl.textContent = t('inst.dir.occupied'); stEl.dataset.state = 'bad'; mainBtn.style.display = 'none'; return
+        } else {
+          stEl.textContent = t('inst.dir.invalid'); stEl.dataset.state = 'bad'; mainBtn.style.display = 'none'; return
+        }
+        mainBtn.style.display = 'inline-block'
+      } catch (err) {
+        stEl.textContent = `${err}`; stEl.dataset.state = 'bad'; mainBtn.style.display = 'none'
+      }
+    }
+
+    const startInstall = async () => {
+      instPhase = 'running'
+      // 步骤列表按模式渲染：fresh=克隆/装依赖/构建；resume=装依赖/构建；use=无步骤
+      const stepsOl = $('inst-steps')
+      stepsOl.replaceChildren()
+      const labels = instMode === 'fresh'
+        ? [t('inst.step.clone'), t('inst.step.install'), t('inst.step.build')]
+        : instMode === 'resume' ? [t('inst.step.install'), t('inst.step.build')] : []
+      for (const lb of labels) {
+        const li = document.createElement('li')
+        li.dataset.status = 'pending'
+        li.textContent = lb
+        stepsOl.appendChild(li)
+      }
+      instLogEl.replaceChildren()
+      instLogFollow = true
+      $('inst-log-wrap').open = false
+      const isUse = instMode === 'use'
+      setInstIcon('spin')
+      $('inst-title').textContent = isUse ? t('inst.title.use') : t('inst.title.running')
+      $('inst-hint').textContent = isUse ? '' : t('inst.hint.running')
+      $('inst-env-list').style.display = 'none'
+      $('inst-dir-area').classList.remove('show')
+      $('install-view').classList.toggle('show-steps', labels.length > 0)
+      $('install-view').classList.toggle('show-log', labels.length > 0)
+      $('inst-error').style.display = 'none'
+      $('inst-btn-main').style.display = 'none'
+      $('inst-btn-recheck').style.display = 'none'
+      // 安装期间复用更新同款"不可关闭"拦截（titlebar 置灰，CloseRequested 弹提示）
+      titlebar.classList.add('updating')
+      try {
+        const r = await invoke('run_install', { dir: instDir, mode: instMode })
+        titlebar.classList.remove('updating')
+        if (r.ok) {
+          // 成功后 Rust 侧已起服务器并发 server-ready：转圈等待进入应用
+          instPhase = 'done'
+          setInstIcon('spin')
+          $('inst-title').textContent = t('inst.title.done')
+          $('inst-hint').textContent = t('inst.hint.done')
+          return
+        }
+        instPhase = 'failed'
+        setInstIcon('fail')
+        $('inst-title').textContent = t('inst.title.failed')
+        $('inst-error').textContent = r.server_start_error
+          ? t('inst.fail.server', { err: r.server_start_error })
+          : t('inst.fail.step', { step: r.failed_step, tail: r.output_tail || '(无输出)' })
+        $('inst-error').style.display = 'block'
+        $('inst-btn-main').textContent = t('inst.btn.retry')
+        $('inst-btn-main').disabled = false
+        $('inst-btn-main').style.display = 'inline-block'
+        $('inst-btn-recheck').textContent = t('inst.btn.backdir')
+        $('inst-btn-recheck').style.display = 'inline-block'
+      } catch (err) {
+        titlebar.classList.remove('updating')
+        instPhase = 'failed'
+        setInstIcon('fail')
+        $('inst-title').textContent = t('inst.title.failed')
+        $('inst-error').textContent = `${err}`
+        $('inst-error').style.display = 'block'
+        $('inst-btn-main').textContent = t('inst.btn.retry')
+        $('inst-btn-main').disabled = false
+        $('inst-btn-main').style.display = 'inline-block'
+        $('inst-btn-recheck').textContent = t('inst.btn.backdir')
+        $('inst-btn-recheck').style.display = 'inline-block'
+      }
+    }
+
+    $('inst-btn-main').addEventListener('click', () => {
+      if (instPhase === 'dir' || instPhase === 'failed') startInstall()
+    })
+    $('inst-btn-recheck').addEventListener('click', () => {
+      if (instPhase === 'env') recheckEnv()
+      else if (instPhase === 'failed') enterDirPhase()
+    })
+
+    // 未找到仓库时由 bootstrap 调用：切入向导视图并立即检测环境
+    const enterInstall = () => {
+      mode = 'install'
+      $('loading-view').style.display = 'none'
+      frame.style.display = 'none'
+      $('install-view').style.display = 'flex'
+      recheckEnv()
+    }
+
     // ---------- iframe 外链转发 ----------
     // 注入脚本拦截 dsh 页面（iframe，无 IPC 权限）里的外部链接点击后
     // postMessage 过来，由本页面（有 IPC 权限）invoke 开系统浏览器
@@ -890,10 +1252,31 @@
         while (updLogEl.childElementCount > 600) updLogEl.removeChild(updLogEl.firstChild)
         if (updateLogFollow) updLogEl.scrollTop = updLogEl.scrollHeight
       })
+      // 安装向导的进度与日志（渲染逻辑与更新一致，目标元素不同）
+      await listen('install-step', (e) => {
+        const li = document.querySelectorAll('#inst-steps li')[e.payload.index]
+        if (li) li.dataset.status = e.payload.status
+      })
+      await listen('install-log', (e) => {
+        const frag = document.createDocumentFragment()
+        for (const ln of e.payload.text.split('\n')) {
+          if (ln === '') continue
+          const d = document.createElement('div')
+          d.textContent = ln
+          if (/\b(error|fatal|panicked|panic)\b|错误|失败/i.test(ln)) d.className = 'lg-err'
+          else if (/warn|deprecated|警告/i.test(ln)) d.className = 'lg-warn'
+          frag.appendChild(d)
+        }
+        instLogEl.appendChild(frag)
+        while (instLogEl.childElementCount > 600) instLogEl.removeChild(instLogEl.firstChild)
+        if (instLogFollow) instLogEl.scrollTop = instLogEl.scrollHeight
+      })
       // 监听全部就绪后再查询当前状态（webview 刷新后恢复 iframe）
       try {
         const st = await invoke('shell_state')
-        if (st.url && mode === 'loading') loadApp({ url: st.url })
+        // 未找到 dsh 仓库：进入首次安装向导（优先级高于一切恢复逻辑）
+        if (st.need_install) { enterInstall() }
+        else if (st.url && mode === 'loading') loadApp({ url: st.url })
       } catch { /* 命令不可用则等待事件 */ }
     }
     bootstrap()

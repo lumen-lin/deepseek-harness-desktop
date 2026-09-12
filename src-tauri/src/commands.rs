@@ -156,6 +156,8 @@ pub(crate) fn shell_report(token: String, msg: String) -> Result<(), String> {
 #[derive(Serialize)]
 pub(crate) struct ShellState {
     pub url: Option<String>,
+    /// 是否处于"首次安装"流程（未找到 dsh 仓库）：壳页面据此切换到安装向导视图
+    pub need_install: bool,
 }
 
 /// Tauri 命令：查询服务器状态。webview 刷新后 server-ready 事件已错过，
@@ -164,9 +166,13 @@ pub(crate) struct ShellState {
 pub(crate) fn shell_state(
     token: String,
     state: tauri::State<'_, ServerUrl>,
+    need: tauri::State<'_, crate::install::NeedInstall>,
 ) -> Result<ShellState, String> {
     guard(&token)?;
-    Ok(ShellState { url: state.0.lock().unwrap().clone() })
+    Ok(ShellState {
+        url: state.0.lock().unwrap().clone(),
+        need_install: *need.0.lock().unwrap(),
+    })
 }
 
 /// 注入到每个页面/iframe（js_init_script_on_all_frames）：

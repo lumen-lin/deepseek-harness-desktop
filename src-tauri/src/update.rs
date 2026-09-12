@@ -58,7 +58,7 @@ pub(crate) struct UpdateResultPayload {
 }
 
 /// 静默跑 git 子命令并取 stdout（不出控制台窗口）。
-fn git_output(repo: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git_output(repo: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new("git");
     cmd.args(args)
         .current_dir(repo)
@@ -272,7 +272,7 @@ fn looks_like_local_change_conflict(output: &str) -> bool {
 /// 存在意义：国内访问 GitHub 常出现 "Empty reply from server"、
 /// "CONNECT tunnel failed" 之类的一次性错误。不重试的话，用户点一次更新
 /// 就看到「拉取代码失败」，误以为是功能坏了。
-fn looks_like_network_error(output: &str) -> bool {
+pub(crate) fn looks_like_network_error(output: &str) -> bool {
     let s = output.to_lowercase();
     [
         "empty reply from server",
@@ -298,7 +298,7 @@ fn looks_like_network_error(output: &str) -> bool {
 /// 独立安装版是 pnpm.exe；都没有时回退 Node 自带的 corepack
 /// （corepack pnpm … 等价于 pnpm …）。
 /// 非 Windows 上 pnpm 是脚本，exec 可直接执行，无需探测。
-fn locate_pnpm() -> Option<(String, Vec<String>)> {
+pub(crate) fn locate_pnpm() -> Option<(String, Vec<String>)> {
     #[cfg(windows)]
     {
         fn find_in_path(names: &[&str]) -> Option<PathBuf> {
@@ -328,7 +328,7 @@ fn locate_pnpm() -> Option<(String, Vec<String>)> {
 }
 
 /// 每步命令的额外环境变量（构建步骤注入 official profile，其余步为空）。
-type StepEnvs = &'static [(&'static str, &'static str)];
+pub(crate) type StepEnvs = &'static [(&'static str, &'static str)];
 
 /// 一条更新命令：程序、参数、环境变量、以及「失败是否可容忍」。
 ///
@@ -379,15 +379,18 @@ fn update_commands(pnpm: &(String, Vec<String>)) -> Vec<UpdateCommand> {
     ]
 }
 
-/// 执行一步更新命令，输出逐行推给前端；返回 (是否成功, 输出尾部)。
-fn run_update_step(app: &AppHandle, repo: &Path, index: usize, label: &str, program: &str, args: &[String], envs: StepEnvs) -> (bool, String) {
-    log(&format!("更新步骤[{label}] 开始"));
-    let _ = app.emit("update-step", UpdateStepEvent { index, status: "running".into() });
+/// 执行一步命令，输出逐行推给前端；返回 (是否成功, 输出尾部)。
+/// 更新与首次安装共用：step_event / log_event 是前端进度与日志的事件名
+/// （更新用 "update-step"/"update-log"，安装用 "install-step"/"install-log"）。
+/// workdir 是命令工作目录（更新=仓库目录；安装的 clone 步骤=目标父目录）。
+pub(crate) fn run_update_step(app: &AppHandle, workdir: &Path, index: usize, label: &str, program: &str, args: &[String], envs: StepEnvs, step_event: &str, log_event: &str) -> (bool, String) {
+    log(&format!("执行步骤[{label}] 开始"));
+    let _ = app.emit(step_event, UpdateStepEvent { index, status: "running".into() });
 
     let mut cmd = Command::new(program);
     cmd.args(args)
         .envs(envs.iter().copied())
-        .current_dir(repo)
+        .current_dir(workdir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let Ok(mut child) = creation_flags_windows(&mut cmd).spawn() else {
@@ -415,7 +418,7 @@ fn run_update_step(app: &AppHandle, repo: &Path, index: usize, label: &str, prog
         output.push_str(&line);
         output.push('\n');
         log(&line);
-        let _ = app.emit("update-log", UpdateLogEvent { text: &format!("{line}\n") });
+        let _ = app.emit(log_event, UpdateLogEvent { text: &format!("{line}\n") });
         if output.len() > 6000 {
             // 必须按字符边界截断：字节切片落在多字节字符中间会 panic，
             // 而 release 是 panic=abort，进程会瞬间消失（窗口"自动关闭"事故根因）
@@ -428,8 +431,8 @@ fn run_update_step(app: &AppHandle, repo: &Path, index: usize, label: &str, prog
     }
     let status = child.wait().ok().and_then(|s| s.code()).unwrap_or(-1);
     let ok = status == 0;
-    let _ = app.emit("update-step", UpdateStepEvent { index, status: if ok { "done".into() } else { "failed".into() } });
-    log(&format!("更新步骤[{label}] {}", if ok { "完成" } else { "失败" }));
+    let _ = app.emit(step_event, UpdateStepEvent { index, status: if ok { "done".into() } else { "failed".into() } });
+    log(&format!("执行步骤[{label}] {}", if ok { "完成" } else { "失败" }));
     (ok, output)
 }
 
@@ -441,6 +444,12 @@ pub(crate) fn is_updating() -> bool {
     UPDATING.load(Ordering::SeqCst)
 }
 
+/// 置忙/闲标记：首次安装流程（install.rs）期间也要拦住窗口关闭，
+/// 与更新共用同一标志（前端提示文案已泛化为"安装/更新"）。
+pub(crate) fn set_updating(v: bool) {
+    UPDATING.store(v, Ordering::SeqCst);
+}
+
 /// RAII 守卫：任何返回路径（含 panic）都复位 UPDATING。
 struct UpdateGuard;
 impl Drop for UpdateGuard {
@@ -450,7 +459,7 @@ impl Drop for UpdateGuard {
 }
 
 /// 取字符串末尾最多 n 个字符（按字符边界，不会切断多字节字符）。
-fn tail_chars(s: &str, n: usize) -> String {
+pub(crate) fn tail_chars(s: &str, n: usize) -> String {
     let chars: Vec<char> = s.chars().collect();
     if chars.len() <= n {
         s.to_string()
@@ -492,7 +501,7 @@ fn rollback_and_rebuild(app: &AppHandle, repo: &Path, base: &str, pnpm: &(String
     // 跳过步骤 0（git pull）：源码已回到基线，只需重建依赖与产物
     for (i, (program, args, envs, _tolerated)) in commands.iter().enumerate().skip(1) {
         let label = format!("回滚重建 · {}", UPDATE_STEP_LABELS[i]);
-        let (ok, _) = run_update_step(app, repo, i, &label, program, args, envs);
+        let (ok, _) = run_update_step(app, repo, i, &label, program, args, envs, "update-step", "update-log");
         if !ok {
             // clean 失败可容忍（与正向更新同策略），其余失败即回滚重建失败
             if *_tolerated {
@@ -659,7 +668,7 @@ fn run_update_blocking(
     }
     while step < commands.len() {
         let (program, args, envs, tolerated) = &commands[step];
-        let (ok, output) = run_update_step(&app, &repo, step, &labels[step], program, args, envs);
+        let (ok, output) = run_update_step(&app, &repo, step, &labels[step], program, args, envs, "update-step", "update-log");
         if ok {
             step += 1;
             continue;

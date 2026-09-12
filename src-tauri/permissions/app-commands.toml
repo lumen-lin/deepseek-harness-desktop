@@ -1,11 +1,11 @@
 # 壳自定义命令的 ACL 权限定义。
 # Tauri 2 中启用 tray-icon 等 feature 后，自定义命令受 ACL 管理，
 # 必须显式授权（否则前端调用报 Command xxx not allowed by ACL）。
-# 本文件定义一个聚合权限，覆盖全部 14 个壳命令，供 capabilities 引用。
+# 本文件定义一个聚合权限，覆盖全部 19 个壳命令，供 capabilities 引用。
 
 [[permission]]
 identifier = "allow-app-commands"
-description = "允许壳页面调用全部自定义命令（更新/版本/窗口/日志等）"
+description = "允许壳页面调用全部自定义命令（更新/安装向导/版本/窗口/日志等）"
 commands = { allow = [
   "check_update",
   "run_update",
@@ -21,4 +21,9 @@ commands = { allow = [
   "read_log",
   "restart_server",
   "rollback_update",
+  "check_env",
+  "inspect_install_dir",
+  "default_install_dir",
+  "pick_install_dir",
+  "run_install",
 ] }

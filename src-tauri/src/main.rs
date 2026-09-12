@@ -11,6 +11,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod install;
 mod locale;
 mod logging;
 mod nav;
@@ -71,6 +72,7 @@ fn main() {
         )
         .manage(server::ServerProc(Mutex::new(None)))
         .manage(server::ServerUrl(Mutex::new(None)))
+        .manage(install::NeedInstall(Mutex::new(false)))
         .invoke_handler(tauri::generate_handler![
             update::check_update,
             update::run_update,
@@ -86,6 +88,11 @@ fn main() {
             commands::read_log,
             update::restart_server,
             update::rollback_update,
+            install::check_env,
+            install::inspect_install_dir,
+            install::default_install_dir,
+            install::pick_install_dir,
+            install::run_install,
         ])
         .setup(|app| {
             let handle = app.handle().clone();
@@ -266,10 +273,17 @@ fn main() {
                 log("系统托盘已创建（点 X 隐藏到托盘）");
             }
 
-            // 仓库定位：自动失败则弹目录选择框（非阻塞，见函数注释）
+            // 仓库定位：失败（新用户/仓库被移走）则标记"首次安装"，
+            // 壳页面 bootstrap 查询 shell_state 后进入安装向导（检测环境 →
+            // 选目录 → 克隆/续装 → 构建），装完自动起服务器进应用
             match repo::locate_repo() {
                 Some(r) => start_backend(handle.clone(), r),
-                None => pick_repo_then_start(app, handle.clone()),
+                None => {
+                    log("未找到 dsh 仓库，进入首次安装向导");
+                    if let Some(state) = handle.try_state::<install::NeedInstall>() {
+                        *state.0.lock().unwrap() = true;
+                    }
+                }
             }
 
             Ok(())
@@ -314,40 +328,4 @@ fn start_backend(handle: tauri::AppHandle, repo: PathBuf) {
         }
         let _ = handle.emit("server-ready", server::ServerReadyPayload { url });
     });
-}
-
-/// 自动定位仓库失败时，弹目录选择框让用户指定，选完再拉起后端。
-///
-/// 必须用**非阻塞**的 `pick_folder`：`blocking_pick_folder` 官方文档明确要求
-/// 不能在主线程调用（setup 回调就跑在主线程），阻塞事件循环会让对话框不响应
-/// 甚至死锁——而这恰恰是新用户第一次安装最可能走到的分支。
-/// 所以把"选完目录之后要做什么"整个塞进回调里。
-fn pick_repo_then_start(app: &tauri::App, handle: tauri::AppHandle) {
-    log("未自动找到仓库，等待用户选择");
-    let h = handle.clone();
-    app.dialog()
-        .file()
-        .set_title("请选择 deepseek-harness 仓库根目录")
-        .pick_folder(move |picked| match picked {
-            Some(path) => {
-                let p = PathBuf::from(path.to_string());
-                if repo::is_repo_root(&p) {
-                    start_backend(h.clone(), p);
-                } else {
-                    log(&format!("所选目录不是有效的仓库（缺少 apps\\cli\\package.json）: {}", p.display()));
-                    let h2 = h.clone();
-                    let _ = h.dialog()
-                        .message(format!(
-                            "所选目录不是有效的 deepseek-harness 仓库。\n\n需要包含 apps\\cli\\package.json：\n{}",
-                            p.display()
-                        ))
-                        .kind(MessageDialogKind::Error)
-                        .show(move |_| h2.exit(1));
-                }
-            }
-            None => {
-                log("用户取消了仓库选择，退出应用");
-                h.exit(0);
-            }
-        });
 }
