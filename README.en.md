@@ -143,8 +143,9 @@ If you already cloned it yourself, the shell searches upward from the exe locati
 │   │   ├── nav.rs         # Navigation allow-list: main window may only stay on our own ports
 │   │   ├── update.rs      # Auto-update flow (pull/switch + pnpm install/clean/build)
 │   │   ├── install.rs     # First-run setup wizard (env check / dir state / clone+install+build)
-│   │   ├── theme.rs       # Theme following (settings.yaml watcher)
-│   │   ├── locale.rs      # Language following (settings.yaml watcher)
+│   │   ├── theme.rs       # Theme following (dsh theme preference → window)
+│   │   ├── locale.rs      # Language following (dsh locale preference → shell UI)
+│   │   ├── settings.rs    # dsh settings reader (both settings.yaml and profile patch documents)
 │   │   ├── logging.rs     # Logging
 │   │   ├── paths.rs       # App base dir / home / dsh config dir
 │   │   └── repo.rs        # Repository locating & shell data dir

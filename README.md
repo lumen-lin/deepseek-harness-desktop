@@ -134,8 +134,9 @@ cargo tauri build
 │   │   ├── nav.rs         # 导航白名单：主窗口只允许停在本进程自己的服务端口
 │   │   ├── update.rs      # 自动更新流程（拉取/切版本 + pnpm install/clean/build）
 │   │   ├── install.rs     # 首次安装向导（环境检测 / 目录状态判定 / 克隆+装依赖+构建）
-│   │   ├── theme.rs       # 主题跟随（settings.yaml 监听）
-│   │   ├── locale.rs      # 语言跟随（settings.yaml 监听）
+│   │   ├── theme.rs       # 主题跟随（dsh 主题偏好 → 窗口深浅）
+│   │   ├── locale.rs      # 语言跟随（dsh 语言偏好 → 壳页面中英文）
+│   │   ├── settings.rs    # dsh 配置读取（跨版本：settings.yaml ↔ profile 补丁文档）
 │   │   ├── logging.rs     # 日志
 │   │   ├── paths.rs       # 应用基目录 / home / dsh 配置目录
 │   │   └── repo.rs        # 仓库定位与壳数据目录

@@ -61,10 +61,24 @@ pub(crate) fn dsh_home() -> PathBuf {
     dirs_home().join(".dsh")
 }
 
-/// dsh 的共享设置文件（主题偏好与语言偏好都写在这里）。
+/// dsh 的历史共享设置文件（dsh ≤0.1.6 的唯一配置落点，主题与语言偏好都在里面）。
 ///
-/// 抽成函数是因为 theme.rs 与 locale.rs 都要读它 —— 以前两边各写一份
-/// `dsh_home().join("settings.yaml")`，将来上游改文件名容易漏改一处。
+/// 0.1.7 起 dsh 不再用它：启动时改名成 [`dsh_imported_settings_path`]，各 section
+/// 搬进活动 profile 的补丁文档。这里仍然保留，是因为回退链要认旧版本安装。
 pub(crate) fn dsh_settings_path() -> PathBuf {
     dsh_home().join("settings.yaml")
+}
+
+/// 旧设置文件被 dsh 迁移后的残留名（`settings.yaml.imported`）。
+///
+/// dsh 的迁移是「先把文件改名，再逐 section 写入 profile」——改名到写完之间
+/// 有窗口期，写入失败被拒的 section 也只会留在改名后的文件里，所以它是回退链
+/// 的最后一环。
+pub(crate) fn dsh_imported_settings_path() -> PathBuf {
+    dsh_home().join("settings.yaml.imported")
+}
+
+/// dsh 的 profile 目录树：`$DSH_HOME/profiles`，每个 profile 一个子目录。
+pub(crate) fn dsh_profiles_dir() -> PathBuf {
+    dsh_home().join("profiles")
 }

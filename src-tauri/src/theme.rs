@@ -1,38 +1,26 @@
-//! dsh 主题偏好读取与跟随（与 dsh 应用共享同一份 settings.yaml）。
-
-use std::fs;
-use std::path::PathBuf;
-use std::time::Duration;
+//! dsh 主题偏好读取与跟随（与 dsh 应用共享同一份配置，读取细节见 settings.rs）。
 
 use tauri::{window::Color, AppHandle, Manager};
 
 use crate::logging::log;
-use crate::paths;
+use crate::settings;
 
-fn settings_path() -> PathBuf {
-    // 路径只在 paths 里定义一次，避免与 locale.rs 各写一份
-    paths::dsh_settings_path()
-}
+/// 主题偏好在 dsh 配置里的条目名（旧版是 settings.yaml 的节名，新版是补丁条目的 id）。
+const THEME_ENTRY: &str = "ui-theme";
 
-/// 读 ui-theme.preference（light/dark/system），失败回 system（跟随系统）。
-/// serde_yaml 正式解析取字段（此前是字符串 contains 匹配，注释或其他字段
-/// 出现同样字样会误判）；dsh 未来若改字段名，此处拿不到值也只是主题跟随
-/// 失效、回退跟随系统，不影响壳的其他功能。
+/// 读 `ui-theme.preference`（light/dark/system），失败回 system（跟随系统）。
+///
+/// 版式适配（settings.yaml ↔ profile 补丁文档）统一由 settings.rs 处理；
+/// dsh 未来若再改版式/字段名，此处拿不到值也只是主题跟随失效、回退跟随系统，
+/// 不影响壳的其他功能。
 fn read_theme_preference() -> String {
-    let Ok(text) = fs::read_to_string(settings_path()) else {
+    let Some(pref) = settings::entry_string(THEME_ENTRY, "preference") else {
         return "system".into();
     };
-    let Ok(value) = serde_yaml::from_str::<serde_yaml::Value>(&text) else {
-        return "system".into();
-    };
-    if let Some(pref) = value
-        .get("ui-theme")
-        .and_then(|theme| theme.get("preference"))
-        .and_then(|p| p.as_str())
-        && ["light", "dark", "system"].contains(&pref)
-    {
-        return pref.into();
+    if ["light", "dark", "system"].contains(&pref.as_str()) {
+        return pref;
     }
+    // 认不出的取值（dsh 将来加档位）按「跟随系统」处理，比按浅色更少误伤
     "system".into()
 }
 
@@ -40,7 +28,13 @@ fn read_theme_preference() -> String {
 pub(crate) fn apply_theme_preference(app: &AppHandle) {
     let pref = read_theme_preference();
     log(&format!("dsh 主题偏好: {pref}"));
-    let dark = match pref.as_str() {
+    apply_preference(app, &pref);
+}
+
+/// 把已解析出的偏好落到窗口上：`set_theme` 决定 WebView2 的 prefers-color-scheme
+/// （壳页面配色靠它），`set_background_color` 管页面画出来之前的窗口底色。
+fn apply_preference(app: &AppHandle, pref: &str) {
+    let dark = match pref {
         "dark" => Some(true),
         "light" => Some(false),
         _ => None, // system：跟随系统
@@ -88,57 +82,10 @@ pub(crate) fn native_theme_prefers_dark() -> bool {
     }
 }
 
-/// 主题跟随：notify 监听 settings.yaml 变化（dsh 应用内切换主题时
-/// 立即生效；应用外的文件修改同样覆盖）。
-/// 实现要点：dsh 保存设置是「写临时文件 + rename 顶替」（原子写入），
-/// 监听单个文件会在顶替后失效，所以监听 ~/.dsh 目录、按路径过滤出
-/// settings.yaml 的事件；保留 30s 兜底重查防文件系统事件偶发丢失；
-/// 监听器建立失败（罕见）时回退纯轮询。
+/// 主题跟随：dsh 应用内切换主题时壳立即同步；应用外改配置文件同样覆盖。
 pub(crate) fn spawn_theme_watcher(handle: AppHandle) {
-    std::thread::spawn(move || {
-        use notify::Watcher;
-        let settings = settings_path();
-        let mut last = read_theme_preference();
-        let (tx, rx) = std::sync::mpsc::channel::<Result<notify::Event, notify::Error>>();
-        let watcher = notify::recommended_watcher(tx).and_then(|mut w| {
-            let dir = paths::dsh_home();
-            let _ = std::fs::create_dir_all(&dir);
-            w.watch(&dir, notify::RecursiveMode::NonRecursive)?;
-            Ok(w)
-        });
-        match watcher {
-            Ok(w) => {
-                let _watcher = w; // 保持监听器存活
-                log("主题监听已建立（目录监听 + 30s 兜底）");
-                loop {
-                    let hit = match rx.recv_timeout(Duration::from_secs(30)) {
-                        Ok(Ok(ev)) => ev.paths.iter().any(|p| p == &settings),
-                        Ok(Err(_)) | Err(_) => true, // 事件错误或超时：兜底重查
-                    };
-                    if hit {
-                        // 稍等写入完全落地再读（事件先于文件内容可见的边角情况）
-                        std::thread::sleep(Duration::from_millis(50));
-                        let now = read_theme_preference();
-                        if now != last {
-                            log(&format!("主题偏好变化（文件）: {now}"));
-                            last = now;
-                            apply_theme_preference(&handle);
-                        }
-                    }
-                }
-            }
-            Err(e) => {
-                log(&format!("主题监听不可用（{e}），回退 500ms 轮询"));
-                loop {
-                    std::thread::sleep(Duration::from_millis(500));
-                    let now = read_theme_preference();
-                    if now != last {
-                        log(&format!("主题偏好变化（文件）: {now}"));
-                        last = now;
-                        apply_theme_preference(&handle);
-                    }
-                }
-            }
-        }
+    settings::spawn_watch("主题", read_theme_preference, move |pref| {
+        apply_preference(&handle, &pref);
     });
 }
+

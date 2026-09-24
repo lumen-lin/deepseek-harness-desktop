@@ -18,6 +18,7 @@ mod nav;
 mod paths;
 mod repo;
 mod server;
+mod settings;
 mod shell;
 mod theme;
 mod update;
@@ -176,9 +177,9 @@ fn main() {
             // 与仓库定位无关，先起来，等 start_backend 把子进程登记进 ServerProc。
             server::spawn_health_watcher(handle.clone());
 
-            // 主题跟随：监听 settings.yaml 变化
+            // 主题跟随：监听 dsh 配置变化（dsh ≤0.1.6 与 ≥0.1.7 的落点都覆盖）
             theme::spawn_theme_watcher(handle.clone());
-            // 语言跟随：监听 settings.yaml 变化（dsh 切换中英文时壳同步）
+            // 语言跟随：监听 dsh 配置变化（dsh 切换中英文时壳同步）
             locale::spawn_locale_watcher(handle.clone());
 
             // 窗口事件：点 X = 隐藏到托盘（服务与会话继续后台运行，防误关）；
